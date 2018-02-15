@@ -33,7 +33,7 @@ GET_SETTING_FAIL2BAN_INFO(){
 }
 
 INSTALL_FAIL2BAN(){
-	if [ ! -e /etc/fail2ban/jail.conf ];then
+	if [ ! -e /etc/fail2ban/jail.local ];then
 		CHECK_OS
 		case "${release}" in
 			centos)
@@ -52,13 +52,17 @@ INSTALL_FAIL2BAN(){
 }
 
 REMOVE_FAIL2BAN(){
-	if [ -e /etc/fail2ban/jail.conf ];then
+	if [ -e /etc/fail2ban/jail.local ];then
 		CHECK_OS
 		case "${release}" in
 			centos)
-				yum -y remove fail2ban;;
+				service fail2ban stop
+				yum -y remove fail2ban
+				rm -rf /etc/fail2ban/jail.local;;
 			debian|ubuntu)
-				apt-get --purge remove fail2ban;;
+				service fail2ban stop
+				apt-get -y remove fail2ban
+				rm -rf /etc/fail2ban/jail.local;;
 		esac
 	else
 		echo "fail2ban尚未安装.";exit
@@ -133,13 +137,13 @@ case "${1}" in
 		echo;echo -e "\033[41;37m【状态】\033[0m";fail2ban-client ping
 		echo;echo -e "\033[41;37m【Service】\033[0m";service fail2ban status;;
 	blocklist|bl)
-		if [ -e /usr/bin/fail2ban-client ];then
+		if [ -e /etc/fail2ban/jail.local ];then
 			fail2ban-client status ssh-iptables
 		else
 			echo "fail2ban尚未安装.";exit
 		fi;;
 	unlock|ul)
-		if [ -e /usr/bin/fail2ban-client ];then
+		if [ -e /etc/fail2ban/jail.local ];then
 			if [[ "${2}" = "" ]];then
 				read -p "请输入需要解封的IP:" UNLOCK_IP
 				if [[ ${UNLOCK_IP} = "" ]];then
