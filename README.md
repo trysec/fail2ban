@@ -1,5 +1,3 @@
-# fail2ban
-
 简介
 ---
 fail2ban 一键安装 \ 卸载脚本
