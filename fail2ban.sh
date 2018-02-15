@@ -37,9 +37,11 @@ INSTALL_FAIL2BAN(){
 		CHECK_OS
 		case "${release}" in
 			centos)
+				GET_SETTING_FAIL2BAN_INFO
 				yum -y install epel-release
 				yum -y install fail2ban;;
 			debian|ubuntu)
+				GET_SETTING_FAIL2BAN_INFO
 				apt-get -y install fail2ban;;
 			*)
 				echo "请使用CentOS,Debian,Ubuntu系统.";;
@@ -54,11 +56,9 @@ REMOVE_FAIL2BAN(){
 		CHECK_OS
 		case "${release}" in
 			centos)
-				yum -y remove fail2ban
-				rm -rf /etc/fail2ban;;
+				yum -y remove fail2ban;;
 			debian|ubuntu)
-				apt-get --purge remove fail2ban
-				rm -rf /etc/fail2ban;;
+				apt-get --purge remove fail2ban;;
 		esac
 	else
 		echo "fail2ban尚未安装.";exit
@@ -124,7 +124,6 @@ VIEW_RUN_LOG(){
 
 case "${1}" in
 	install)
-		GET_SETTING_FAIL2BAN_INFO
 		INSTALL_FAIL2BAN
 		SETTING_FAIL2BAN;;
 	uninstall)
@@ -170,9 +169,9 @@ fail2ban-client -h";;
 	restart)
 		service fail2ban restart;;
 	*)
-		echo "{install|uninstall|runlog|more}"
-		echo "{start|stop|restart|status}"
-		echo "{blocklist|unlock}";;
+		echo "bash fail2ban.sh {install|uninstall|runlog|more}"
+		echo "bash fail2ban.sh {start|stop|restart|status}"
+		echo "bash fail2ban.sh {blocklist|unlock}";;
 esac
 
 #END
