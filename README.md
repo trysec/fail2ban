@@ -9,7 +9,7 @@ fail2ban 一键安装 \ 卸载脚本
 使用
 ---
 ```
-wget "[https://raw.githubusercontent.com/qinghuas/fail2ban/master/fail2ban.sh](https://raw.githubusercontent.com/trysec/fail2ban/refs/heads/master/fail2ban.sh)"
+wget "https://raw.githubusercontent.com/trysec/fail2ban/refs/heads/master/fail2ban.sh"
 ```
 ![image](https://i.loli.net/2018/02/15/5a8533967e7f1.png)
 
