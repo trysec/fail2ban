@@ -88,23 +88,47 @@ GET_SSH_SERVICE_NAME(){
     fi
 }
 
-# 检测防火墙类型
+# 检测并安装防火墙
 DETECT_FIREWALL(){
     # 优先级：firewalld > nftables > iptables
     if command -v firewall-cmd &> /dev/null && systemctl is-active firewalld &> /dev/null; then
         FIREWALL_TYPE="firewalld"
         FAIL2BAN_ACTION="firewallcmd-ipset"
-    elif command -v nft &> /dev/null && (nft list tables 2>/dev/null | grep -q .) ; then
+    elif command -v nft &> /dev/null; then
+        # 只要 nft 命令存在就使用 nftables，不管是否已有表
         FIREWALL_TYPE="nftables"
         FAIL2BAN_ACTION="nftables-multiport"
     elif command -v iptables &> /dev/null; then
         FIREWALL_TYPE="iptables"
         FAIL2BAN_ACTION="iptables[name=SSH, port=ssh, protocol=tcp]"
     else
-        # 如果都没有，尝试安装 iptables 作为回退
-        FIREWALL_TYPE="iptables"
-        FAIL2BAN_ACTION="iptables[name=SSH, port=ssh, protocol=tcp]"
-        echo "警告: 未检测到防火墙，将使用 iptables"
+        # 没有任何防火墙工具，尝试安装
+        echo "警告: 未检测到防火墙工具 (firewalld/nftables/iptables)"
+        echo "正在尝试安装 iptables..."
+
+        CHECK_OS
+        case "${release}" in
+            centos)
+                if command -v dnf &> /dev/null; then
+                    dnf -y install iptables iptables-services
+                else
+                    yum -y install iptables iptables-services
+                fi
+                ;;
+            debian|ubuntu)
+                apt-get -y install iptables
+                ;;
+        esac
+
+        # 再次检查是否安装成功
+        if command -v iptables &> /dev/null; then
+            FIREWALL_TYPE="iptables"
+            FAIL2BAN_ACTION="iptables[name=SSH, port=ssh, protocol=tcp]"
+            echo "iptables 安装成功"
+        else
+            echo "错误: 无法安装防火墙工具，fail2ban 需要防火墙才能工作"
+            exit 1
+        fi
     fi
 }
 
