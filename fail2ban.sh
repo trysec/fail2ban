@@ -88,6 +88,29 @@ GET_SSH_SERVICE_NAME(){
     fi
 }
 
+# 检查 fail2ban action 文件是否存在
+CHECK_FAIL2BAN_ACTION(){
+    local action_name=$1
+    local action_file="${action_name}.conf"
+
+    # 按优先级检查所有可能的路径
+    local search_paths=(
+        "/etc/fail2ban/action.d"
+        "/usr/lib/fail2ban/action.d"
+        "/usr/lib64/fail2ban/action.d"
+        "/usr/share/fail2ban/action.d"
+        "/usr/local/share/fail2ban/action.d"
+    )
+
+    for path in "${search_paths[@]}"; do
+        if [[ -f "${path}/${action_file}" ]]; then
+            return 0  # 找到了
+        fi
+    done
+
+    return 1  # 未找到
+}
+
 # 检测并安装防火墙
 DETECT_FIREWALL(){
     # 优先级：firewalld > nftables > iptables
@@ -95,9 +118,15 @@ DETECT_FIREWALL(){
     # 检查 firewalld
     if command -v firewall-cmd &> /dev/null; then
         if systemctl is-active firewalld &> /dev/null; then
-            FIREWALL_TYPE="firewalld"
-            FAIL2BAN_ACTION="firewallcmd-ipset"
-            return
+            # 检查 firewallcmd-ipset action 是否存在
+            if CHECK_FAIL2BAN_ACTION "firewallcmd-ipset"; then
+                FIREWALL_TYPE="firewalld"
+                FAIL2BAN_ACTION="firewallcmd-ipset"
+                return
+            else
+                echo "警告: firewalld 运行中但 fail2ban 缺少 firewallcmd-ipset action"
+                echo "      将尝试使用其他防火墙方案"
+            fi
         else
             echo "提示: 检测到 firewalld 已安装但未运行"
             echo "      如需使用 firewalld，请运行: systemctl start firewalld && systemctl enable firewalld"
@@ -107,13 +136,12 @@ DETECT_FIREWALL(){
     # 检查 nftables
     if command -v nft &> /dev/null; then
         # 检查 fail2ban 是否支持 nftables action
-        if [[ -f /etc/fail2ban/action.d/nftables-multiport.conf ]] || \
-           [[ -f /usr/share/fail2ban/action.d/nftables-multiport.conf ]]; then
+        if CHECK_FAIL2BAN_ACTION "nftables-multiport"; then
             FIREWALL_TYPE="nftables"
             FAIL2BAN_ACTION="nftables-multiport"
             return
         else
-            echo "警告: nft 命令存在但 fail2ban 缺少 nftables-multiport.conf action 文件"
+            echo "警告: nft 命令存在但 fail2ban 缺少 nftables-multiport action"
             echo "      将尝试使用其他防火墙方案"
         fi
     fi
