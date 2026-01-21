@@ -88,6 +88,50 @@ GET_SSH_SERVICE_NAME(){
     fi
 }
 
+# 检测防火墙类型
+DETECT_FIREWALL(){
+    # 优先级：firewalld > nftables > iptables
+    if command -v firewall-cmd &> /dev/null && systemctl is-active firewalld &> /dev/null; then
+        FIREWALL_TYPE="firewalld"
+        FAIL2BAN_ACTION="firewallcmd-ipset"
+    elif command -v nft &> /dev/null && (nft list tables 2>/dev/null | grep -q .) ; then
+        FIREWALL_TYPE="nftables"
+        FAIL2BAN_ACTION="nftables-multiport"
+    elif command -v iptables &> /dev/null; then
+        FIREWALL_TYPE="iptables"
+        FAIL2BAN_ACTION="iptables[name=SSH, port=ssh, protocol=tcp]"
+    else
+        # 如果都没有，尝试安装 iptables 作为回退
+        FIREWALL_TYPE="iptables"
+        FAIL2BAN_ACTION="iptables[name=SSH, port=ssh, protocol=tcp]"
+        echo "警告: 未检测到防火墙，将使用 iptables"
+    fi
+}
+
+# 检测日志系统类型
+DETECT_LOG_BACKEND(){
+    local log_file=$1
+
+    # 检查传统日志文件是否存在且有内容
+    if [[ -f "$log_file" ]] && [[ -s "$log_file" ]]; then
+        # 文件存在且不为空，使用传统日志
+        USE_SYSTEMD_BACKEND=false
+        LOG_BACKEND="auto"
+    elif systemctl is-active rsyslog &> /dev/null || systemctl is-active syslog-ng &> /dev/null; then
+        # rsyslog/syslog-ng 在运行，但日志文件可能还未创建
+        USE_SYSTEMD_BACKEND=false
+        LOG_BACKEND="auto"
+    elif command -v journalctl &> /dev/null && systemctl --version &> /dev/null; then
+        # 只有 systemd journal，没有传统日志
+        USE_SYSTEMD_BACKEND=true
+        LOG_BACKEND="systemd"
+    else
+        # 回退到自动检测
+        USE_SYSTEMD_BACKEND=false
+        LOG_BACKEND="auto"
+    fi
+}
+
 # 启动/停止/重启服务的通用函数
 SERVICE_CONTROL(){
     local service_name=$1
@@ -118,15 +162,31 @@ SERVICE_CONTROL(){
 }
 
 GET_SETTING_FAIL2BAN_INFO(){
-    read -p "允许SSH登陆失败次数,默认10:" BLOCKING_THRESHOLD
-    if [[ -z "${BLOCKING_THRESHOLD}" ]]; then
-        BLOCKING_THRESHOLD='10'
-    fi
+    # 获取并验证失败次数
+    while true; do
+        read -p "允许SSH登陆失败次数,默认10:" BLOCKING_THRESHOLD
+        if [[ -z "${BLOCKING_THRESHOLD}" ]]; then
+            BLOCKING_THRESHOLD='10'
+            break
+        elif [[ "${BLOCKING_THRESHOLD}" =~ ^[0-9]+$ ]]; then
+            break
+        else
+            echo "错误: 请输入有效的数字"
+        fi
+    done
 
-    read -p "SSH登陆失败次数超过${BLOCKING_THRESHOLD}次时,封禁时长(h),默认8760:" BLOCKING_TIME_H
-    if [[ -z "${BLOCKING_TIME_H}" ]]; then
-        BLOCKING_TIME_H='8760'
-    fi
+    # 获取并验证封禁时长
+    while true; do
+        read -p "SSH登陆失败次数超过${BLOCKING_THRESHOLD}次时,封禁时长(h),默认8760:" BLOCKING_TIME_H
+        if [[ -z "${BLOCKING_TIME_H}" ]]; then
+            BLOCKING_TIME_H='8760'
+            break
+        elif [[ "${BLOCKING_TIME_H}" =~ ^[0-9]+$ ]]; then
+            break
+        else
+            echo "错误: 请输入有效的数字"
+        fi
+    done
 
     # 使用bash算术运算，比expr更高效
     BLOCKING_TIME_S=$((BLOCKING_TIME_H * 3600))
@@ -202,64 +262,70 @@ REMOVE_FAIL2BAN(){
 SETTING_FAIL2BAN(){
     CHECK_OS
     GET_SSH_SERVICE_NAME
+    DETECT_FIREWALL
 
+    # 根据发行版确定默认日志文件
     case "${release}" in
         centos)
-            # 检测日志路径
-            if [[ -f /var/log/secure ]]; then
-                LOG_PATH="/var/log/secure"
-            else
-                # 新版本可能使用journald
-                LOG_PATH="%(sshd_log)s"
-            fi
+            DEFAULT_LOG_FILE="/var/log/secure"
+            ;;
+        debian|ubuntu)
+            DEFAULT_LOG_FILE="/var/log/auth.log"
+            ;;
+    esac
 
-            cat > /etc/fail2ban/jail.local <<EOF
+    # 检测日志后端
+    DETECT_LOG_BACKEND "$DEFAULT_LOG_FILE"
+
+    echo "检测到防火墙类型: $FIREWALL_TYPE"
+    echo "检测到日志后端: $LOG_BACKEND"
+
+    # 生成配置
+    if [[ "$USE_SYSTEMD_BACKEND" == true ]]; then
+        # 使用 systemd journal
+        cat > /etc/fail2ban/jail.local <<EOF
 [DEFAULT]
 ignoreip = 127.0.0.1
 bantime = 86400
 maxretry = 3
 findtime = 1800
 
-[ssh-iptables]
+[sshd]
 enabled = true
 filter = sshd
-action = iptables[name=SSH, port=ssh, protocol=tcp]
-logpath = $LOG_PATH
+backend = systemd
 maxretry = ${BLOCKING_THRESHOLD}
 findtime = 3600
 bantime = ${BLOCKING_TIME_S}
+action = ${FAIL2BAN_ACTION}
 EOF
-
-            SERVICE_CONTROL fail2ban restart
-            SERVICE_CONTROL fail2ban enable
-            SERVICE_CONTROL $SSH_SERVICE restart
-            ;;
-
-        debian|ubuntu)
-            cat > /etc/fail2ban/jail.local <<EOF
+    else
+        # 使用传统日志文件
+        cat > /etc/fail2ban/jail.local <<EOF
 [DEFAULT]
 ignoreip = 127.0.0.1
 bantime = 86400
-maxretry = ${BLOCKING_THRESHOLD}
+maxretry = 3
 findtime = 1800
 
-[ssh-iptables]
+[sshd]
 enabled = true
 filter = sshd
-action = iptables[name=SSH, port=ssh, protocol=tcp]
-logpath = /var/log/auth.log
+logpath = ${DEFAULT_LOG_FILE}
 maxretry = ${BLOCKING_THRESHOLD}
 findtime = 3600
 bantime = ${BLOCKING_TIME_S}
+action = ${FAIL2BAN_ACTION}
 EOF
+    fi
 
-            SERVICE_CONTROL fail2ban restart
-            SERVICE_CONTROL fail2ban enable
-            SERVICE_CONTROL $SSH_SERVICE restart
-            ;;
-    esac
+    SERVICE_CONTROL fail2ban restart
+    SERVICE_CONTROL fail2ban enable
+    SERVICE_CONTROL $SSH_SERVICE restart
 
     echo "fail2ban配置完成."
+    echo "使用的防火墙: $FIREWALL_TYPE"
+    echo "使用的日志后端: $LOG_BACKEND"
 }
 
 VIEW_RUN_LOG(){
@@ -306,7 +372,7 @@ case "${1}" in
         ;;
     blocklist|bl)
         if [[ -e /etc/fail2ban/jail.local ]]; then
-            fail2ban-client status ssh-iptables
+            fail2ban-client status sshd
         else
             echo "fail2ban尚未安装."
             exit 1
@@ -328,7 +394,7 @@ case "${1}" in
             UNLOCK_IP="${2}"
         fi
 
-        fail2ban-client set ssh-iptables unbanip ${UNLOCK_IP}
+        fail2ban-client set sshd unbanip ${UNLOCK_IP}
         echo "IP ${UNLOCK_IP} 已解封."
         ;;
     more)
