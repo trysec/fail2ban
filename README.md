@@ -135,6 +135,16 @@ Windows 快捷解除封禁 : `powershell -ExecutionPolicy Bypass -File .\fail2ba
 
 Windows 查看封禁列表 : `powershell -ExecutionPolicy Bypass -File .\fail2ban.ps1 {blocklist|bl}`
 
+Windows 查看白名单 : `powershell -ExecutionPolicy Bypass -File .\fail2ban.ps1 whitelist list`
+
+Windows 添加白名单 : `powershell -ExecutionPolicy Bypass -File .\fail2ban.ps1 whitelist add ip`
+
+Windows 删除白名单 : `powershell -ExecutionPolicy Bypass -File .\fail2ban.ps1 whitelist remove ip`
+
+Windows 查看配置 : `powershell -ExecutionPolicy Bypass -File .\fail2ban.ps1 config show`
+
+Windows 修改配置 : `powershell -ExecutionPolicy Bypass -File .\fail2ban.ps1 config set threshold 8`
+
 注：`bl` 为 `block list` 简拼，`ul` 为 `un lock` 简拼，使用上是等效的。
 
 # 特性说明
@@ -164,6 +174,7 @@ Windows 查看封禁列表 : `powershell -ExecutionPolicy Bypass -File .\fail2ba
 - 通过计划任务定时扫描并清理过期封禁
 - 支持自定义忽略 IP 列表
 - 通过近期失败记录持久化和最小失败间隔去重，减少重复计数
+- 支持运行后通过命令管理白名单和关键配置
 
 # 日志
 
@@ -176,6 +187,7 @@ Windows 查看封禁列表 : `powershell -ExecutionPolicy Bypass -File .\fail2ba
 - 增加 GitHub 远程一键安装与卸载命令
 - 新增 `install_latest.ps1`，支持 IPBan 风格远程一键安装
 - 新增忽略 IP 配置与最小失败间隔去重
+- 新增 `whitelist` / `config` 命令，支持在线调整白名单和配置
 
 `2026-01-21` : 重大更新
 

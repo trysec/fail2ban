@@ -10,7 +10,10 @@ param(
     [int]$FindTimeMinutes = 0,
     [int]$TaskIntervalMinutes = 0,
     [int]$MinimumFailureIntervalSeconds = 0,
-    [string]$IgnoreIPs = ""
+    [string]$IgnoreIPs = "",
+
+    [Parameter(ValueFromRemainingArguments = $true)]
+    [string[]]$ExtraArgs
 )
 
 Set-StrictMode -Version Latest
@@ -43,6 +46,8 @@ function SHOW_USAGE {
     Write-Host "powershell -ExecutionPolicy Bypass -File .\fail2ban.ps1 {install|uninstall|runlog|more}"
     Write-Host "powershell -ExecutionPolicy Bypass -File .\fail2ban.ps1 {start|stop|restart|status}"
     Write-Host "powershell -ExecutionPolicy Bypass -File .\fail2ban.ps1 {blocklist|bl|unlock|ul} [ip]"
+    Write-Host "powershell -ExecutionPolicy Bypass -File .\fail2ban.ps1 whitelist {list|add|remove} [ip]"
+    Write-Host "powershell -ExecutionPolicy Bypass -File .\fail2ban.ps1 config {show|set} [key] [value]"
     Write-Host ""
     Write-Host "Windows mode monitors failed RDP login events and blocks source IPs with Windows Firewall."
 }
@@ -154,6 +159,18 @@ function GET_LIST_SETTING {
     return CONVERT_TO_STRING_ARRAY -Value $inputValue -DefaultValues $DefaultValues
 }
 
+function ASSERT_VALID_IP_LIST {
+    param(
+        [string[]]$IPs
+    )
+
+    foreach ($ip in @($IPs)) {
+        if (-not (TEST_IP_ADDRESS -Candidate $ip)) {
+            throw "Invalid IP address: $ip"
+        }
+    }
+}
+
 function NEW_DEFAULT_STATE {
     return [pscustomobject]@{
         BlockedIPs      = @()
@@ -203,6 +220,18 @@ function SAVE_CONFIG {
 
     ENSURE_BASE_DIR
     $Config | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $CONFIG_PATH -Encoding UTF8
+}
+
+function UPDATE_SCHEDULED_TASK_IF_NEEDED {
+    param(
+        [Parameter(Mandatory = $true)]
+        [psobject]$Config
+    )
+
+    $task = GET_TASK -TaskName $Config.TaskName
+    if ($null -ne $task) {
+        REGISTER_MONITOR_TASK -Config $Config
+    }
 }
 
 function LOAD_STATE {
@@ -1057,6 +1086,141 @@ function UNLOCK_IP {
     SAVE_STATE -State $state
 }
 
+function SHOW_WHITELIST {
+    ASSERT_INSTALLED
+
+    $config = LOAD_CONFIG
+    $entries = @($config.IgnoreIPs | Sort-Object -Unique)
+
+    if ($entries.Count -eq 0) {
+        Write-Host "Whitelist is empty."
+        return
+    }
+
+    $entries | ForEach-Object { Write-Host $_ }
+}
+
+function ADD_WHITELIST_IP {
+    ASSERT_ADMIN
+    ASSERT_INSTALLED
+
+    $targetIP = $Value
+    if ([string]::IsNullOrWhiteSpace($targetIP) -and $ExtraArgs.Count -gt 0) {
+        $targetIP = $ExtraArgs[0]
+    }
+
+    if ([string]::IsNullOrWhiteSpace($targetIP)) {
+        $targetIP = Read-Host "Enter the IP to whitelist"
+    }
+
+    ASSERT_VALID_IP_LIST -IPs @($targetIP)
+
+    $config = LOAD_CONFIG
+    $config.IgnoreIPs = @(@($config.IgnoreIPs) + $targetIP | Select-Object -Unique)
+    SAVE_CONFIG -Config $config
+    WRITE_LOG -Message ("Whitelisted IP {0}" -f $targetIP)
+}
+
+function REMOVE_WHITELIST_IP {
+    ASSERT_ADMIN
+    ASSERT_INSTALLED
+
+    $targetIP = $Value
+    if ([string]::IsNullOrWhiteSpace($targetIP) -and $ExtraArgs.Count -gt 0) {
+        $targetIP = $ExtraArgs[0]
+    }
+
+    if ([string]::IsNullOrWhiteSpace($targetIP)) {
+        $targetIP = Read-Host "Enter the IP to remove from whitelist"
+    }
+
+    ASSERT_VALID_IP_LIST -IPs @($targetIP)
+
+    $config = LOAD_CONFIG
+    $config.IgnoreIPs = @($config.IgnoreIPs | Where-Object { $_ -ne $targetIP })
+    SAVE_CONFIG -Config $config
+    WRITE_LOG -Message ("Removed whitelisted IP {0}" -f $targetIP)
+}
+
+function SHOW_CONFIG {
+    ASSERT_INSTALLED
+    $config = LOAD_CONFIG
+    $config | ConvertTo-Json -Depth 6
+}
+
+function SET_CONFIG_VALUE {
+    ASSERT_ADMIN
+    ASSERT_INSTALLED
+
+    $key = $Value
+    $rawValue = $null
+
+    if ($ExtraArgs.Count -gt 0) {
+        $rawValue = ($ExtraArgs -join " ")
+    }
+
+    if ([string]::IsNullOrWhiteSpace($key)) {
+        throw "Config key is required."
+    }
+
+    if ([string]::IsNullOrWhiteSpace($rawValue)) {
+        $rawValue = Read-Host "Enter value for $key"
+    }
+
+    $config = LOAD_CONFIG
+    $normalizedKey = $key.ToLowerInvariant()
+
+    switch ($normalizedKey) {
+        "threshold" {
+            $parsed = 0
+            if (-not (TEST_POSITIVE_INT -Candidate $rawValue -ParsedValue ([ref]$parsed))) {
+                throw "Threshold must be a positive integer."
+            }
+            $config.Threshold = $parsed
+        }
+        "banhours" {
+            $parsed = 0
+            if (-not (TEST_POSITIVE_INT -Candidate $rawValue -ParsedValue ([ref]$parsed))) {
+                throw "BanHours must be a positive integer."
+            }
+            $config.BanHours = $parsed
+        }
+        "findtimeminutes" {
+            $parsed = 0
+            if (-not (TEST_POSITIVE_INT -Candidate $rawValue -ParsedValue ([ref]$parsed))) {
+                throw "FindTimeMinutes must be a positive integer."
+            }
+            $config.FindTimeMinutes = $parsed
+        }
+        "taskintervalminutes" {
+            $parsed = 0
+            if (-not (TEST_POSITIVE_INT -Candidate $rawValue -ParsedValue ([ref]$parsed))) {
+                throw "TaskIntervalMinutes must be a positive integer."
+            }
+            $config.TaskIntervalMinutes = $parsed
+        }
+        "minimumfailureintervalseconds" {
+            $parsed = 0
+            if (-not (TEST_POSITIVE_INT -Candidate $rawValue -ParsedValue ([ref]$parsed))) {
+                throw "MinimumFailureIntervalSeconds must be a positive integer."
+            }
+            $config.MinimumFailureIntervalSeconds = $parsed
+        }
+        "ignoreips" {
+            $ips = CONVERT_TO_STRING_ARRAY -Value $rawValue -DefaultValues @()
+            ASSERT_VALID_IP_LIST -IPs $ips
+            $config.IgnoreIPs = @($ips | Select-Object -Unique)
+        }
+        default {
+            throw "Unsupported config key: $key"
+        }
+    }
+
+    SAVE_CONFIG -Config $config
+    UPDATE_SCHEDULED_TASK_IF_NEEDED -Config $config
+    WRITE_LOG -Message ("Updated config {0} = {1}" -f $key, $rawValue)
+}
+
 function VIEW_RUN_LOG {
     ASSERT_INSTALLED
     Write-Host "Watching $LOG_PATH"
@@ -1077,6 +1241,8 @@ function SHOW_MORE {
     Write-Host "Useful commands"
     Write-Host "Get-WinEvent -FilterHashtable @{LogName='Security'; Id=4625} -MaxEvents 20"
     Write-Host "Get-ScheduledTask -TaskName Fail2BanWin-Monitor"
+    Write-Host ".\fail2ban.ps1 whitelist list"
+    Write-Host ".\fail2ban.ps1 config show"
     Write-Host ""
     Write-Host "Advanced install example"
     Write-Host ".\fail2ban.ps1 install -Threshold 8 -BanHours 24 -FindTimeMinutes 30 -MinimumFailureIntervalSeconds 3 -IgnoreIPs '127.0.0.1,::1,10.0.0.5'"
@@ -1152,6 +1318,46 @@ switch ($Command.ToLowerInvariant()) {
     }
     "ul" {
         UNLOCK_IP
+    }
+    "whitelist" {
+        switch ($Value.ToLowerInvariant()) {
+            "list" {
+                SHOW_WHITELIST
+            }
+            "add" {
+                if ($ExtraArgs.Count -gt 0) {
+                    $script:Value = $ExtraArgs[0]
+                }
+                ADD_WHITELIST_IP
+            }
+            "remove" {
+                if ($ExtraArgs.Count -gt 0) {
+                    $script:Value = $ExtraArgs[0]
+                }
+                REMOVE_WHITELIST_IP
+            }
+            default {
+                Write-Host "Usage: .\fail2ban.ps1 whitelist {list|add|remove} [ip]"
+            }
+        }
+    }
+    "config" {
+        switch ($Value.ToLowerInvariant()) {
+            "show" {
+                SHOW_CONFIG
+            }
+            "set" {
+                if ($ExtraArgs.Count -lt 2) {
+                    throw "Usage: .\fail2ban.ps1 config set <key> <value>"
+                }
+                $script:Value = $ExtraArgs[0]
+                $script:ExtraArgs = @($ExtraArgs[1..($ExtraArgs.Count - 1)])
+                SET_CONFIG_VALUE
+            }
+            default {
+                Write-Host "Usage: .\fail2ban.ps1 config {show|set} [key] [value]"
+            }
+        }
     }
     "more" {
         SHOW_MORE
