@@ -48,29 +48,29 @@ uninstall-win.bat
 Windows GitHub 一键安装：
 
 ```powershell
-$script = Join-Path $env:TEMP 'fail2ban.ps1'
-Invoke-WebRequest 'https://raw.githubusercontent.com/trysec/fail2ban/master/fail2ban.ps1' -OutFile $script
-& $script install
+$ProgressPreference = 'SilentlyContinue'
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+& ([ScriptBlock]::Create((New-Object System.Net.WebClient).DownloadString('https://raw.githubusercontent.com/trysec/fail2ban/master/install_latest.ps1')))
 ```
 
 Windows GitHub 一键卸载：
 
 ```powershell
-$script = Join-Path $env:TEMP 'fail2ban.ps1'
-Invoke-WebRequest 'https://raw.githubusercontent.com/trysec/fail2ban/master/fail2ban.ps1' -OutFile $script
-& $script uninstall
+$ProgressPreference = 'SilentlyContinue'
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+& ([ScriptBlock]::Create((New-Object System.Net.WebClient).DownloadString('https://raw.githubusercontent.com/trysec/fail2ban/master/install_latest.ps1'))) -Uninstall
 ```
 
 Windows CMD 一键安装：
 
 ```bat
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$script = Join-Path $env:TEMP 'fail2ban.ps1'; Invoke-WebRequest 'https://raw.githubusercontent.com/trysec/fail2ban/master/fail2ban.ps1' -OutFile $script; & $script install"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference = 'SilentlyContinue'; [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; & ([ScriptBlock]::Create((New-Object System.Net.WebClient).DownloadString('https://raw.githubusercontent.com/trysec/fail2ban/master/install_latest.ps1')))"
 ```
 
 Windows CMD 一键卸载：
 
 ```bat
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$script = Join-Path $env:TEMP 'fail2ban.ps1'; Invoke-WebRequest 'https://raw.githubusercontent.com/trysec/fail2ban/master/fail2ban.ps1' -OutFile $script; & $script uninstall"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference = 'SilentlyContinue'; [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; & ([ScriptBlock]::Create((New-Object System.Net.WebClient).DownloadString('https://raw.githubusercontent.com/trysec/fail2ban/master/install_latest.ps1'))) -Uninstall"
 ```
 
 # 详解
@@ -163,6 +163,7 @@ Windows 查看封禁列表 : `powershell -ExecutionPolicy Bypass -File .\fail2ba
 - 使用计划任务实现持续监控
 - 增加 `install-win.bat` / `uninstall-win.bat` 本地一键安装与卸载
 - 增加 GitHub 远程一键安装与卸载命令
+- 新增 `install_latest.ps1`，支持 IPBan 风格远程一键安装
 
 `2026-01-21` : 重大更新
 
