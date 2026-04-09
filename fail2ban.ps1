@@ -8,7 +8,9 @@ param(
     [int]$Threshold = 0,
     [int]$BanHours = 0,
     [int]$FindTimeMinutes = 0,
-    [int]$TaskIntervalMinutes = 0
+    [int]$TaskIntervalMinutes = 0,
+    [int]$MinimumFailureIntervalSeconds = 0,
+    [string]$IgnoreIPs = ""
 )
 
 Set-StrictMode -Version Latest
@@ -22,16 +24,17 @@ $LOCK_PATH = Join-Path $BASE_DIR "monitor.lock"
 $INSTALLED_SCRIPT_PATH = Join-Path $BASE_DIR "fail2ban.ps1"
 
 $DEFAULT_CONFIG = [ordered]@{
-    Threshold           = 10
-    BanHours            = 8760
-    FindTimeMinutes     = 60
-    TaskIntervalMinutes = 1
-    LogName             = "OpenSSH/Operational"
-    RuleGroup           = "Fail2Ban Windows"
-    RulePrefix          = "Fail2BanWin-Block"
-    TaskName            = "Fail2BanWin-Monitor"
-    IgnoreIPs           = @("127.0.0.1", "::1")
-    InstalledScriptPath = $INSTALLED_SCRIPT_PATH
+    Threshold                     = 10
+    BanHours                      = 8760
+    FindTimeMinutes               = 60
+    TaskIntervalMinutes           = 1
+    MinimumFailureIntervalSeconds = 1
+    LogName                       = "OpenSSH/Operational"
+    RuleGroup                     = "Fail2Ban Windows"
+    RulePrefix                    = "Fail2BanWin-Block"
+    TaskName                      = "Fail2BanWin-Monitor"
+    IgnoreIPs                     = @("127.0.0.1", "::1")
+    InstalledScriptPath           = $INSTALLED_SCRIPT_PATH
 }
 
 function SHOW_USAGE {
@@ -119,10 +122,41 @@ function GET_NUMERIC_SETTING {
     }
 }
 
+function CONVERT_TO_STRING_ARRAY {
+    param(
+        [string]$Value,
+        [string[]]$DefaultValues = @()
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return @($DefaultValues)
+    }
+
+    $items = $Value -split "[,\s;]+" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    return @($items | Select-Object -Unique)
+}
+
+function GET_LIST_SETTING {
+    param(
+        [string]$Prompt,
+        [string[]]$DefaultValues,
+        [string]$ProvidedValue
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($ProvidedValue)) {
+        return CONVERT_TO_STRING_ARRAY -Value $ProvidedValue -DefaultValues $DefaultValues
+    }
+
+    $defaultText = ($DefaultValues -join ", ")
+    $inputValue = Read-Host "$Prompt, default $defaultText"
+    return CONVERT_TO_STRING_ARRAY -Value $inputValue -DefaultValues $DefaultValues
+}
+
 function NEW_DEFAULT_STATE {
     return [pscustomobject]@{
-        BlockedIPs = @()
-        LastScanAt = $null
+        BlockedIPs      = @()
+        RecentFailures  = @()
+        LastScanAt      = $null
     }
 }
 
@@ -183,6 +217,10 @@ function LOAD_STATE {
         $state | Add-Member -NotePropertyName "BlockedIPs" -NotePropertyValue @() -Force
     }
 
+    if (-not ($state.PSObject.Properties.Name -contains "RecentFailures") -or $null -eq $state.RecentFailures) {
+        $state | Add-Member -NotePropertyName "RecentFailures" -NotePropertyValue @() -Force
+    }
+
     if (-not ($state.PSObject.Properties.Name -contains "LastScanAt")) {
         $state | Add-Member -NotePropertyName "LastScanAt" -NotePropertyValue $null -Force
     }
@@ -203,9 +241,15 @@ function SAVE_STATE {
         $blocked = @($State.BlockedIPs)
     }
 
+    $recentFailures = @()
+    if ($null -ne $State.RecentFailures) {
+        $recentFailures = @($State.RecentFailures)
+    }
+
     $normalizedState = [pscustomobject]@{
-        BlockedIPs = $blocked
-        LastScanAt = $State.LastScanAt
+        BlockedIPs     = $blocked
+        RecentFailures = $recentFailures
+        LastScanAt     = $State.LastScanAt
     }
 
     $normalizedState | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $STATE_PATH -Encoding UTF8
@@ -280,7 +324,60 @@ function TEST_FAILURE_MESSAGE {
         return $false
     }
 
-    return ($Message -match "(?i)failed|invalid user|authentication")
+    $normalized = $Message.ToLowerInvariant()
+
+    if ($normalized -match "accepted password|accepted publickey|session opened|starting session|subsystem request") {
+        return $false
+    }
+
+    return ($normalized -match "failed password|authentication failed|invalid user|maximum authentication attempts|unable to authenticate|connection closed by authenticating user|fail")
+}
+
+function GET_EVENT_DATA_MAP {
+    param(
+        [Parameter(Mandatory = $true)]
+        [psobject]$Event
+    )
+
+    $result = @{}
+
+    try {
+        $xml = [xml]$Event.ToXml()
+        foreach ($node in @($xml.Event.EventData.Data)) {
+            $name = [string]$node.Name
+            if ([string]::IsNullOrWhiteSpace($name)) {
+                continue
+            }
+
+            $result[$name.ToLowerInvariant()] = [string]$node.'#text'
+        }
+    }
+    catch {
+    }
+
+    return $result
+}
+
+function TEST_FAILURE_EVENT {
+    param(
+        [Parameter(Mandatory = $true)]
+        [psobject]$Event,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$EventData
+    )
+
+    if (TEST_FAILURE_MESSAGE -Message $Event.Message) {
+        return $true
+    }
+
+    foreach ($key in @("result", "status", "keywords", "message")) {
+        if ($EventData.ContainsKey($key) -and $EventData[$key] -match "(?i)fail|invalid|authenticate") {
+            return $true
+        }
+    }
+
+    return $false
 }
 
 function GET_REMOTE_IP_FROM_EVENT {
@@ -288,6 +385,16 @@ function GET_REMOTE_IP_FROM_EVENT {
         [Parameter(Mandatory = $true)]
         [psobject]$Event
     )
+
+    $eventData = GET_EVENT_DATA_MAP -Event $Event
+    foreach ($key in @("ipaddress", "address", "sourceaddress", "remoteaddress", "clientaddress")) {
+        if ($eventData.ContainsKey($key)) {
+            $candidate = $eventData[$key]
+            if (TEST_IP_ADDRESS -Candidate $candidate) {
+                return $candidate
+            }
+        }
+    }
 
     $message = [string]$Event.Message
     if ([string]::IsNullOrWhiteSpace($message)) {
@@ -297,6 +404,14 @@ function GET_REMOTE_IP_FROM_EVENT {
     $match = [regex]::Match($message, "(?im)\bfrom\s+(?<ip>[0-9a-f:\.]+)\b")
     if ($match.Success) {
         $candidate = $match.Groups["ip"].Value
+        if (TEST_IP_ADDRESS -Candidate $candidate) {
+            return $candidate
+        }
+    }
+
+    $allCandidates = [regex]::Matches($message, "(?im)(?<ip>(?:\d{1,3}\.){3}\d{1,3}|(?:(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}))")
+    foreach ($candidateMatch in $allCandidates) {
+        $candidate = $candidateMatch.Groups["ip"].Value
         if (TEST_IP_ADDRESS -Candidate $candidate) {
             return $candidate
         }
@@ -318,7 +433,8 @@ function GET_RECENT_FAILURES {
     } -ErrorAction Stop
 
     $failures = foreach ($event in $events) {
-        if (-not (TEST_FAILURE_MESSAGE -Message $event.Message)) {
+        $eventData = GET_EVENT_DATA_MAP -Event $event
+        if (-not (TEST_FAILURE_EVENT -Event $event -EventData $eventData)) {
             continue
         }
 
@@ -332,14 +448,92 @@ function GET_RECENT_FAILURES {
         }
 
         [pscustomobject]@{
-            IP          = $ip
-            TimeCreated = $event.TimeCreated
-            RecordId    = $event.RecordId
-            Message     = $event.Message
+            IP         = $ip
+            OccurredAt = $event.TimeCreated.ToString("o")
+            RecordId   = $event.RecordId
         }
     }
 
     return @($failures)
+}
+
+function GET_FAILURE_KEY {
+    param(
+        [Parameter(Mandatory = $true)]
+        [psobject]$Failure
+    )
+
+    if ($Failure.PSObject.Properties.Name -contains "RecordId" -and $null -ne $Failure.RecordId -and [string]$Failure.RecordId -ne "") {
+        return "record:{0}" -f $Failure.RecordId
+    }
+
+    return "fallback:{0}:{1}" -f $Failure.IP, $Failure.OccurredAt
+}
+
+function MERGE_RECENT_FAILURES {
+    param(
+        [Parameter(Mandatory = $true)]
+        [psobject]$State,
+
+        [Parameter(Mandatory = $true)]
+        [object[]]$NewFailures
+    )
+
+    $merged = @()
+    $seen = @{}
+
+    foreach ($failure in @($State.RecentFailures) + @($NewFailures)) {
+        $key = GET_FAILURE_KEY -Failure $failure
+        if ($seen.ContainsKey($key)) {
+            continue
+        }
+
+        $seen[$key] = $true
+        $merged += $failure
+    }
+
+    $State.RecentFailures = $merged
+}
+
+function REMOVE_EXPIRED_FAILURES {
+    param(
+        [Parameter(Mandatory = $true)]
+        [psobject]$Config,
+
+        [Parameter(Mandatory = $true)]
+        [psobject]$State
+    )
+
+    $windowStart = (Get-Date).AddMinutes(-1 * [int]$Config.FindTimeMinutes)
+    $State.RecentFailures = @(
+        $State.RecentFailures | Where-Object {
+            [datetime]$_.OccurredAt -ge $windowStart
+        }
+    )
+}
+
+function GET_EFFECTIVE_FAILURE_COUNT {
+    param(
+        [Parameter(Mandatory = $true)]
+        [psobject]$Config,
+
+        [Parameter(Mandatory = $true)]
+        [object[]]$Failures
+    )
+
+    $minimumSpacing = [timespan]::FromSeconds([int]$Config.MinimumFailureIntervalSeconds)
+    $count = 0
+    $lastCountedAt = $null
+
+    foreach ($failure in @($Failures | Sort-Object { [datetime]$_.OccurredAt })) {
+        $occurredAt = [datetime]$failure.OccurredAt
+        if ($null -eq $lastCountedAt -or ($occurredAt - $lastCountedAt) -ge $minimumSpacing) {
+            $count++
+            $lastCountedAt = $occurredAt
+        }
+    }
+
+    return $count
 }
 
 function GET_BLOCK_ENTRY {
@@ -533,21 +727,24 @@ function INSTALL_FAIL2BAN_WINDOWS {
     $banHoursValue = GET_NUMERIC_SETTING -ProvidedValue $BanHours -Prompt "Ban duration in hours" -DefaultValue ([int]$DEFAULT_CONFIG.BanHours)
     $findTimeValue = GET_NUMERIC_SETTING -ProvidedValue $FindTimeMinutes -Prompt "Failure window in minutes" -DefaultValue ([int]$DEFAULT_CONFIG.FindTimeMinutes)
     $intervalValue = GET_NUMERIC_SETTING -ProvidedValue $TaskIntervalMinutes -Prompt "Scan interval in minutes" -DefaultValue ([int]$DEFAULT_CONFIG.TaskIntervalMinutes)
+    $minimumFailureIntervalValue = GET_NUMERIC_SETTING -ProvidedValue $MinimumFailureIntervalSeconds -Prompt "Minimum seconds between counted failures from the same IP" -DefaultValue ([int]$DEFAULT_CONFIG.MinimumFailureIntervalSeconds)
+    $ignoreIPsValue = GET_LIST_SETTING -Prompt "Ignore IP list, comma separated" -DefaultValues @($DEFAULT_CONFIG.IgnoreIPs) -ProvidedValue $IgnoreIPs
 
     ENSURE_OPENSSH_LOG -LogName $DEFAULT_CONFIG.LogName
     INSTALL_SCRIPT_BINARY
 
     $config = [pscustomobject][ordered]@{
-        Threshold           = $thresholdValue
-        BanHours            = $banHoursValue
-        FindTimeMinutes     = $findTimeValue
-        TaskIntervalMinutes = $intervalValue
-        LogName             = $DEFAULT_CONFIG.LogName
-        RuleGroup           = $DEFAULT_CONFIG.RuleGroup
-        RulePrefix          = $DEFAULT_CONFIG.RulePrefix
-        TaskName            = $DEFAULT_CONFIG.TaskName
-        IgnoreIPs           = $DEFAULT_CONFIG.IgnoreIPs
-        InstalledScriptPath = $INSTALLED_SCRIPT_PATH
+        Threshold                     = $thresholdValue
+        BanHours                      = $banHoursValue
+        FindTimeMinutes               = $findTimeValue
+        TaskIntervalMinutes           = $intervalValue
+        MinimumFailureIntervalSeconds = $minimumFailureIntervalValue
+        LogName                       = $DEFAULT_CONFIG.LogName
+        RuleGroup                     = $DEFAULT_CONFIG.RuleGroup
+        RulePrefix                    = $DEFAULT_CONFIG.RulePrefix
+        TaskName                      = $DEFAULT_CONFIG.TaskName
+        IgnoreIPs                     = $ignoreIPsValue
+        InstalledScriptPath           = $INSTALLED_SCRIPT_PATH
     }
 
     SAVE_CONFIG -Config $config
@@ -651,7 +848,9 @@ function SHOW_STATUS {
     Write-Host "BanHours: $($config.BanHours)"
     Write-Host "FindTimeMinutes: $($config.FindTimeMinutes)"
     Write-Host "TaskIntervalMinutes: $($config.TaskIntervalMinutes)"
+    Write-Host "MinimumFailureIntervalSeconds: $($config.MinimumFailureIntervalSeconds)"
     Write-Host "LogName: $($config.LogName)"
+    Write-Host "IgnoreIPs: $(@($config.IgnoreIPs) -join ', ')"
     Write-Host ""
     Write-Host "Monitor"
 
@@ -674,6 +873,7 @@ function SHOW_STATUS {
 
     Write-Host ""
     Write-Host "BlockedIPs: $(@($state.BlockedIPs).Count)"
+    Write-Host "RecentFailures: $(@($state.RecentFailures).Count)"
 }
 
 function SHOW_BLOCKLIST {
@@ -738,6 +938,9 @@ function SHOW_MORE {
     Write-Host "Useful commands"
     Write-Host "Get-WinEvent -LogName OpenSSH/Operational -MaxEvents 20"
     Write-Host "Get-ScheduledTask -TaskName Fail2BanWin-Monitor"
+    Write-Host ""
+    Write-Host "Advanced install example"
+    Write-Host ".\fail2ban.ps1 install -Threshold 8 -BanHours 24 -FindTimeMinutes 30 -MinimumFailureIntervalSeconds 3 -IgnoreIPs '127.0.0.1,::1,10.0.0.5'"
 }
 
 function INVOKE_SCAN {
@@ -756,12 +959,16 @@ function INVOKE_SCAN {
         $state = LOAD_STATE
 
         REMOVE_EXPIRED_BLOCKS -Config $config -State $state
+        REMOVE_EXPIRED_FAILURES -Config $config -State $state
 
         $failures = GET_RECENT_FAILURES -Config $config
-        $groups = @($failures | Group-Object -Property IP)
+        MERGE_RECENT_FAILURES -State $state -NewFailures $failures
+
+        $groups = @($state.RecentFailures | Group-Object -Property IP)
 
         foreach ($group in $groups) {
-            if ($group.Count -lt [int]$config.Threshold) {
+            $effectiveCount = GET_EFFECTIVE_FAILURE_COUNT -Config $config -Failures @($group.Group)
+            if ($effectiveCount -lt [int]$config.Threshold) {
                 continue
             }
 

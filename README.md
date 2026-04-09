@@ -61,6 +61,14 @@ $ProgressPreference = 'SilentlyContinue'
 & ([ScriptBlock]::Create((New-Object System.Net.WebClient).DownloadString('https://raw.githubusercontent.com/trysec/fail2ban/master/install_latest.ps1'))) -Uninstall
 ```
 
+Windows GitHub 高级安装示例：
+
+```powershell
+$ProgressPreference = 'SilentlyContinue'
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+& ([ScriptBlock]::Create((New-Object System.Net.WebClient).DownloadString('https://raw.githubusercontent.com/trysec/fail2ban/master/install_latest.ps1'))) -Threshold 8 -BanHours 24 -FindTimeMinutes 30 -MinimumFailureIntervalSeconds 3 -IgnoreIPs '127.0.0.1,::1,10.0.0.5'
+```
+
 Windows CMD 一键安装：
 
 ```bat
@@ -153,6 +161,8 @@ Windows 查看封禁列表 : `powershell -ExecutionPolicy Bypass -File .\fail2ba
 - 通过 `OpenSSH/Operational` 事件日志识别 SSH 失败登录
 - 通过 Windows Defender Firewall 自动创建和移除封禁规则
 - 通过计划任务定时扫描并清理过期封禁
+- 支持自定义忽略 IP 列表
+- 通过近期失败记录持久化和最小失败间隔去重，减少重复计数
 
 # 日志
 
@@ -164,6 +174,7 @@ Windows 查看封禁列表 : `powershell -ExecutionPolicy Bypass -File .\fail2ba
 - 增加 `install-win.bat` / `uninstall-win.bat` 本地一键安装与卸载
 - 增加 GitHub 远程一键安装与卸载命令
 - 新增 `install_latest.ps1`，支持 IPBan 风格远程一键安装
+- 新增忽略 IP 配置与最小失败间隔去重
 
 `2026-01-21` : 重大更新
 

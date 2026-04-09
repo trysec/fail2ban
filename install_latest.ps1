@@ -3,7 +3,9 @@ param(
     [int]$Threshold = 0,
     [int]$BanHours = 0,
     [int]$FindTimeMinutes = 0,
-    [int]$TaskIntervalMinutes = 0
+    [int]$TaskIntervalMinutes = 0,
+    [int]$MinimumFailureIntervalSeconds = 0,
+    [string]$IgnoreIPs = ""
 )
 
 Set-StrictMode -Version Latest
@@ -38,6 +40,14 @@ if ($FindTimeMinutes -gt 0) {
 
 if ($TaskIntervalMinutes -gt 0) {
     $argumentList += @("-TaskIntervalMinutes", $TaskIntervalMinutes)
+}
+
+if ($MinimumFailureIntervalSeconds -gt 0) {
+    $argumentList += @("-MinimumFailureIntervalSeconds", $MinimumFailureIntervalSeconds)
+}
+
+if (-not [string]::IsNullOrWhiteSpace($IgnoreIPs)) {
+    $argumentList += @("-IgnoreIPs", $IgnoreIPs)
 }
 
 $process = Start-Process -FilePath "powershell.exe" -ArgumentList $argumentList -Wait -PassThru
