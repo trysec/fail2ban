@@ -1,5 +1,12 @@
 #!/bin/bash
 
+ASSERT_ROOT(){
+    if [[ $EUID -ne 0 ]]; then
+        echo "错误: 此操作需要 root 权限，请使用 sudo 运行。"
+        exit 1
+    fi
+}
+
 CHECK_WINDOWS_SHELL(){
     local uname_s
     uname_s="$(uname -s 2>/dev/null)"
@@ -285,6 +292,8 @@ GET_SETTING_FAIL2BAN_INFO(){
 }
 
 INSTALL_FAIL2BAN(){
+    ASSERT_ROOT
+
     if [[ -e /etc/fail2ban/jail.local ]]; then
         echo "fail2ban已经安装了."
         exit 0
@@ -325,6 +334,8 @@ INSTALL_FAIL2BAN(){
 }
 
 REMOVE_FAIL2BAN(){
+    ASSERT_ROOT
+
     if [[ ! -e /etc/fail2ban/jail.local ]]; then
         echo "fail2ban尚未安装."
         exit 0
@@ -378,9 +389,6 @@ SETTING_FAIL2BAN(){
         cat > /etc/fail2ban/jail.local <<EOF
 [DEFAULT]
 ignoreip = 127.0.0.1
-bantime = 86400
-maxretry = 3
-findtime = 1800
 
 [sshd]
 enabled = true
@@ -396,9 +404,6 @@ EOF
         cat > /etc/fail2ban/jail.local <<EOF
 [DEFAULT]
 ignoreip = 127.0.0.1
-bantime = 86400
-maxretry = 3
-findtime = 1800
 
 [sshd]
 enabled = true
@@ -413,7 +418,8 @@ EOF
 
     SERVICE_CONTROL fail2ban restart
     SERVICE_CONTROL fail2ban enable
-    SERVICE_CONTROL $SSH_SERVICE restart
+    # 使用 reload 而非 restart，避免中断当前 SSH 远程会话
+    SERVICE_CONTROL $SSH_SERVICE reload 2>/dev/null || SERVICE_CONTROL $SSH_SERVICE restart
 
     echo "fail2ban配置完成."
     echo "使用的防火墙: $FIREWALL_TYPE"
@@ -422,15 +428,15 @@ EOF
 
 VIEW_RUN_LOG(){
     CHECK_OS
+    GET_SSH_SERVICE_NAME
 
     case "${release}" in
         centos)
             if [[ -f /var/log/secure ]]; then
                 tail -f /var/log/secure
             else
-                # 使用journalctl查看systemd日志
                 echo "使用journalctl查看日志..."
-                journalctl -u sshd -f
+                journalctl -u $SSH_SERVICE -f
             fi
             ;;
         debian|ubuntu)
@@ -438,7 +444,7 @@ VIEW_RUN_LOG(){
                 tail -f /var/log/auth.log
             else
                 echo "使用journalctl查看日志..."
-                journalctl -u ssh -f
+                journalctl -u $SSH_SERVICE -f
             fi
             ;;
     esac
@@ -484,6 +490,11 @@ case "${1}" in
             fi
         else
             UNLOCK_IP="${2}"
+        fi
+
+        if ! [[ "${UNLOCK_IP}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$|^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$ ]]; then
+            echo "错误: 无效的 IP 地址格式: ${UNLOCK_IP}"
+            exit 1
         fi
 
         fail2ban-client set sshd unbanip ${UNLOCK_IP}

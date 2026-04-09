@@ -330,7 +330,7 @@ function TEST_FAILURE_MESSAGE {
         return $false
     }
 
-    return ($normalized -match "failed password|authentication failed|invalid user|maximum authentication attempts|unable to authenticate|connection closed by authenticating user|fail")
+    return ($normalized -match "failed password|authentication failed|invalid user|maximum authentication attempts|unable to authenticate|connection closed by authenticating user|\bfail\b")
 }
 
 function GET_EVENT_DATA_MAP {
@@ -430,7 +430,11 @@ function GET_RECENT_FAILURES {
     $events = Get-WinEvent -FilterHashtable @{
         LogName   = $Config.LogName
         StartTime = $windowStart
-    } -ErrorAction Stop
+    } -ErrorAction SilentlyContinue
+
+    if ($null -eq $events) {
+        return @()
+    }
 
     $failures = foreach ($event in $events) {
         $eventData = GET_EVENT_DATA_MAP -Event $event
@@ -782,7 +786,7 @@ function REMOVE_FAIL2BAN_WINDOWS {
 
     if (Test-Path -LiteralPath $BASE_DIR) {
         $resolvedPath = (Resolve-Path -LiteralPath $BASE_DIR).Path
-        if ($resolvedPath -eq $BASE_DIR) {
+        if ($resolvedPath.Equals($BASE_DIR, [System.StringComparison]::OrdinalIgnoreCase)) {
             Remove-Item -LiteralPath $BASE_DIR -Recurse -Force
         }
     }
