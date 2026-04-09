@@ -48,12 +48,28 @@ uninstall-win.bat
 Windows GitHub 一键安装：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$script = Join-Path $env:TEMP 'fail2ban.ps1'; Invoke-WebRequest 'https://raw.githubusercontent.com/trysec/fail2ban/master/fail2ban.ps1' -OutFile $script; & $script install"
+$script = Join-Path $env:TEMP 'fail2ban.ps1'
+Invoke-WebRequest 'https://raw.githubusercontent.com/trysec/fail2ban/master/fail2ban.ps1' -OutFile $script
+& $script install
 ```
 
 Windows GitHub 一键卸载：
 
 ```powershell
+$script = Join-Path $env:TEMP 'fail2ban.ps1'
+Invoke-WebRequest 'https://raw.githubusercontent.com/trysec/fail2ban/master/fail2ban.ps1' -OutFile $script
+& $script uninstall
+```
+
+Windows CMD 一键安装：
+
+```bat
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$script = Join-Path $env:TEMP 'fail2ban.ps1'; Invoke-WebRequest 'https://raw.githubusercontent.com/trysec/fail2ban/master/fail2ban.ps1' -OutFile $script; & $script install"
+```
+
+Windows CMD 一键卸载：
+
+```bat
 powershell -NoProfile -ExecutionPolicy Bypass -Command "$script = Join-Path $env:TEMP 'fail2ban.ps1'; Invoke-WebRequest 'https://raw.githubusercontent.com/trysec/fail2ban/master/fail2ban.ps1' -OutFile $script; & $script uninstall"
 ```
 
