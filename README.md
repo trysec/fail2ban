@@ -200,7 +200,7 @@ Windows 修改配置 : `powershell -ExecutionPolicy Bypass -File .\fail2ban.ps1 
 4. 执行 `powershell -ExecutionPolicy Bypass -File .\fail2ban.ps1 blocklist`，确认被封 IP 可见。
 5. 执行 `Get-NetFirewallRule -Group 'Fail2Ban Windows'`，确认对应防火墙规则已创建。
 6. 执行 `powershell -ExecutionPolicy Bypass -File .\fail2ban.ps1 unlock <ip>`，确认防火墙规则和状态记录都能移除。
-- 支持运行后通过命令管理白名单和关键配置
+7. 执行 `powershell -ExecutionPolicy Bypass -File .\fail2ban.ps1 whitelist list` 和 `config show`，确认白名单和配置管理命令正常工作。
 
 # 日志
 
