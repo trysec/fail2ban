@@ -331,11 +331,11 @@ function TEST_FAILURE_MESSAGE {
     }
 
     $knownPatterns = @(
-        "(?i)failed password for(?: invalid user)? .+ from [0-9a-f:\.]+",
-        "(?i)failed publickey for(?: invalid user)? .+ from [0-9a-f:\.]+",
-        "(?i)invalid user .+ from [0-9a-f:\.]+",
-        "(?i)maximum authentication attempts exceeded for(?: invalid user)? .+ from [0-9a-f:\.]+",
-        "(?i)pam: authentication failure for .+ from [0-9a-f:\.]+"
+        "failed password for(?: invalid user)? .+ from [0-9a-f:\.]+",
+        "failed publickey for(?: invalid user)? .+ from [0-9a-f:\.]+",
+        "invalid user .+ from [0-9a-f:\.]+",
+        "maximum authentication attempts exceeded for(?: invalid user)? .+ from [0-9a-f:\.]+",
+        "pam: authentication failure for .+ from [0-9a-f:\.]+"
     )
 
     foreach ($pattern in $knownPatterns) {
@@ -625,7 +625,7 @@ function GET_FIREWALL_BLOCK_ENTRIES {
         }
     }
 
-    return @($entries | Sort-Object IP -Unique)
+    return @($entries | Group-Object IP | ForEach-Object { $_.Group | Select-Object -First 1 } | Sort-Object IP)
 }
 
 function SYNC_STATE_WITH_FIREWALL {
@@ -1026,6 +1026,10 @@ function UNLOCK_IP {
 
     if ([string]::IsNullOrWhiteSpace($targetIP)) {
         throw "IP address cannot be empty."
+    }
+
+    if ($targetIP -ne "all" -and -not (TEST_IP_ADDRESS -Candidate $targetIP)) {
+        throw "Invalid IP address: $targetIP"
     }
 
     if ($targetIP -eq "all") {
