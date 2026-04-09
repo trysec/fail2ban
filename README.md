@@ -180,6 +180,26 @@ Windows 修改配置 : `powershell -ExecutionPolicy Bypass -File .\fail2ban.ps1 
 - 保守支持：Windows 10、Windows 11、Windows Server 2016、Windows Server 2019、Windows Server 2022、Windows Server 2025
 - 依赖组件：PowerShell、`Get-WinEvent`、Windows Defender Firewall、计划任务、`Security` 日志中的 `4625` 事件
 - 更早版本没有在当前脚本里声明支持，即使理论上部分组件存在，也不建议直接视为兼容
+
+**Windows 测试矩阵**
+
+| 版本 | 支持状态 | 主要用途 | 建议验证项 |
+| --- | --- | --- | --- |
+| Windows 10 | 支持 | 桌面 / 跳板机 | `4625` 事件、Firewall 规则、计划任务 |
+| Windows 11 | 支持 | 桌面 / 跳板机 | `4625` 事件、Firewall 规则、计划任务 |
+| Windows Server 2016 | 支持 | 服务器 / RDP 防护 | `4625` 事件、TermService、Firewall 规则、计划任务 |
+| Windows Server 2019 | 支持 | 服务器 / RDP 防护 | `4625` 事件、TermService、Firewall 规则、计划任务 |
+| Windows Server 2022 | 支持 | 服务器 / RDP 防护 | `4625` 事件、TermService、Firewall 规则、计划任务 |
+| Windows Server 2025 | 支持 | 服务器 / RDP 防护 | `4625` 事件、TermService、Firewall 规则、计划任务 |
+
+**Windows 最小验收步骤**
+
+1. 安装后执行 `powershell -ExecutionPolicy Bypass -File .\fail2ban.ps1 status`，确认计划任务存在且配置已写入。
+2. 执行 `Get-WinEvent -FilterHashtable @{LogName='Security'; Id=4625} -MaxEvents 20`，确认系统确实能看到失败登录事件。
+3. 进行一次可控的 RDP 失败登录测试，确认来源 IP 被记录并在达到阈值后进入封禁。
+4. 执行 `powershell -ExecutionPolicy Bypass -File .\fail2ban.ps1 blocklist`，确认被封 IP 可见。
+5. 执行 `Get-NetFirewallRule -Group 'Fail2Ban Windows'`，确认对应防火墙规则已创建。
+6. 执行 `powershell -ExecutionPolicy Bypass -File .\fail2ban.ps1 unlock <ip>`，确认防火墙规则和状态记录都能移除。
 - 支持运行后通过命令管理白名单和关键配置
 
 # 日志
