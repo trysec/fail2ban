@@ -10,7 +10,7 @@ fail2ban 一键安装 / 卸载脚本。
 
 - **RHEL 系列**: CentOS 7/8/9, RHEL 7/8/9, Rocky Linux 8/9, AlmaLinux 8/9, Fedora
 - **Debian 系列**: Debian 9/10/11/12, Ubuntu 18.04/20.04/22.04/24.04
-- **Windows**: Windows 10/11, Windows Server（PowerShell 版，主要保护 RDP，依赖 Windows Defender Firewall）
+- **Windows**: Windows 10, Windows 11, Windows Server 2016/2019/2022/2025（PowerShell 版，主要保护 RDP，依赖 Windows Defender Firewall）
 
 自动检测特性：
 
@@ -174,6 +174,12 @@ Windows 修改配置 : `powershell -ExecutionPolicy Bypass -File .\fail2ban.ps1 
 - 通过计划任务定时扫描并清理过期封禁
 - 支持自定义忽略 IP 列表
 - 通过近期失败记录持久化和最小失败间隔去重，减少重复计数
+
+**Windows 支持范围**
+
+- 保守支持：Windows 10、Windows 11、Windows Server 2016、Windows Server 2019、Windows Server 2022、Windows Server 2025
+- 依赖组件：PowerShell、`Get-WinEvent`、Windows Defender Firewall、计划任务、`Security` 日志中的 `4625` 事件
+- 更早版本没有在当前脚本里声明支持，即使理论上部分组件存在，也不建议直接视为兼容
 - 支持运行后通过命令管理白名单和关键配置
 
 # 日志
