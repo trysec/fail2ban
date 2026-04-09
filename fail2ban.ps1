@@ -29,7 +29,9 @@ $DEFAULT_CONFIG = [ordered]@{
     FindTimeMinutes               = 60
     TaskIntervalMinutes           = 1
     MinimumFailureIntervalSeconds = 1
-    LogName                       = "OpenSSH/Operational"
+    LogName                       = "Security"
+    EventId                       = 4625
+    AllowedLogonTypes             = @("10")
     RuleGroup                     = "Fail2Ban Windows"
     RulePrefix                    = "Fail2BanWin-Block"
     TaskName                      = "Fail2BanWin-Monitor"
@@ -42,7 +44,7 @@ function SHOW_USAGE {
     Write-Host "powershell -ExecutionPolicy Bypass -File .\fail2ban.ps1 {start|stop|restart|status}"
     Write-Host "powershell -ExecutionPolicy Bypass -File .\fail2ban.ps1 {blocklist|bl|unlock|ul} [ip]"
     Write-Host ""
-    Write-Host "Windows mode monitors OpenSSH failed login events and blocks source IPs with Windows Firewall."
+    Write-Host "Windows mode monitors failed RDP login events and blocks source IPs with Windows Firewall."
 }
 
 function ENSURE_BASE_DIR {
@@ -255,7 +257,7 @@ function SAVE_STATE {
     $normalizedState | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $STATE_PATH -Encoding UTF8
 }
 
-function ENSURE_OPENSSH_LOG {
+function ENSURE_MONITOR_LOG {
     param(
         [Parameter(Mandatory = $true)]
         [string]$LogName
@@ -375,23 +377,29 @@ function GET_EVENT_DATA_MAP {
 function TEST_FAILURE_EVENT {
     param(
         [Parameter(Mandatory = $true)]
+        [psobject]$Config,
+
+        [Parameter(Mandatory = $true)]
         [psobject]$Event,
 
         [Parameter(Mandatory = $true)]
         [hashtable]$EventData
     )
 
-    if (TEST_FAILURE_MESSAGE -Message $Event.Message) {
-        return $true
+    if ($Event.Id -ne [int]$Config.EventId) {
+        return $false
     }
 
-    foreach ($key in @("payload", "message")) {
-        if ($EventData.ContainsKey($key) -and (TEST_FAILURE_MESSAGE -Message $EventData[$key])) {
-            return $true
-        }
+    $logonType = ""
+    if ($EventData.ContainsKey("logontype")) {
+        $logonType = [string]$EventData["logontype"]
     }
 
-    return $false
+    if (@($Config.AllowedLogonTypes) -notcontains $logonType) {
+        return $false
+    }
+
+    return $true
 }
 
 function GET_REMOTE_IP_FROM_EVENT {
@@ -452,7 +460,7 @@ function GET_RECENT_FAILURES {
 
     $failures = foreach ($event in $events) {
         $eventData = GET_EVENT_DATA_MAP -Event $event
-        if (-not (TEST_FAILURE_EVENT -Event $event -EventData $eventData)) {
+        if (-not (TEST_FAILURE_EVENT -Config $Config -Event $event -EventData $eventData)) {
             continue
         }
 
@@ -803,7 +811,7 @@ function REGISTER_MONITOR_TASK {
         -Trigger $trigger `
         -Principal $principal `
         -Settings $settings `
-        -Description "Fail2Ban-like SSH brute-force protection for Windows OpenSSH." `
+        -Description "Fail2Ban-like RDP brute-force protection for Windows." `
         -Force | Out-Null
 }
 
@@ -827,14 +835,14 @@ function INSTALL_FAIL2BAN_WINDOWS {
 
     ENSURE_BASE_DIR
 
-    $thresholdValue = GET_NUMERIC_SETTING -ProvidedValue $Threshold -Prompt "Allowed SSH failures before ban" -DefaultValue ([int]$DEFAULT_CONFIG.Threshold)
+    $thresholdValue = GET_NUMERIC_SETTING -ProvidedValue $Threshold -Prompt "Allowed RDP failures before ban" -DefaultValue ([int]$DEFAULT_CONFIG.Threshold)
     $banHoursValue = GET_NUMERIC_SETTING -ProvidedValue $BanHours -Prompt "Ban duration in hours" -DefaultValue ([int]$DEFAULT_CONFIG.BanHours)
     $findTimeValue = GET_NUMERIC_SETTING -ProvidedValue $FindTimeMinutes -Prompt "Failure window in minutes" -DefaultValue ([int]$DEFAULT_CONFIG.FindTimeMinutes)
     $intervalValue = GET_NUMERIC_SETTING -ProvidedValue $TaskIntervalMinutes -Prompt "Scan interval in minutes" -DefaultValue ([int]$DEFAULT_CONFIG.TaskIntervalMinutes)
     $minimumFailureIntervalValue = GET_NUMERIC_SETTING -ProvidedValue $MinimumFailureIntervalSeconds -Prompt "Minimum seconds between counted failures from the same IP" -DefaultValue ([int]$DEFAULT_CONFIG.MinimumFailureIntervalSeconds)
     $ignoreIPsValue = GET_LIST_SETTING -Prompt "Ignore IP list, comma separated" -DefaultValues @($DEFAULT_CONFIG.IgnoreIPs) -ProvidedValue $IgnoreIPs
 
-    ENSURE_OPENSSH_LOG -LogName $DEFAULT_CONFIG.LogName
+    ENSURE_MONITOR_LOG -LogName $DEFAULT_CONFIG.LogName
     INSTALL_SCRIPT_BINARY
 
     $config = [pscustomobject][ordered]@{
@@ -844,6 +852,8 @@ function INSTALL_FAIL2BAN_WINDOWS {
         TaskIntervalMinutes           = $intervalValue
         MinimumFailureIntervalSeconds = $minimumFailureIntervalValue
         LogName                       = $DEFAULT_CONFIG.LogName
+        EventId                       = $DEFAULT_CONFIG.EventId
+        AllowedLogonTypes             = $DEFAULT_CONFIG.AllowedLogonTypes
         RuleGroup                     = $DEFAULT_CONFIG.RuleGroup
         RulePrefix                    = $DEFAULT_CONFIG.RulePrefix
         TaskName                      = $DEFAULT_CONFIG.TaskName
@@ -864,12 +874,12 @@ function INSTALL_FAIL2BAN_WINDOWS {
     SAVE_STATE -State $state
     REGISTER_MONITOR_TASK -Config $config
 
-    $sshdService = Get-Service sshd -ErrorAction SilentlyContinue
-    if ($null -eq $sshdService) {
-        WRITE_LOG -Message "Installed, but sshd service was not found. Install Windows OpenSSH Server to make blocking effective." -Level "WARN"
+    $rdpService = Get-Service TermService -ErrorAction SilentlyContinue
+    if ($null -eq $rdpService) {
+        WRITE_LOG -Message "Installed, but TermService was not found. Remote Desktop protection may not be effective on this system." -Level "WARN"
     }
     else {
-        WRITE_LOG -Message ("Detected sshd service with status {0}." -f $sshdService.Status)
+        WRITE_LOG -Message ("Detected TermService with status {0}." -f $rdpService.Status)
     }
 
     WRITE_LOG -Message "Install completed."
@@ -959,7 +969,7 @@ function SHOW_STATUS {
         $taskInfo = Get-ScheduledTaskInfo -TaskName $config.TaskName
     }
 
-    $sshdService = Get-Service sshd -ErrorAction SilentlyContinue
+    $rdpService = Get-Service TermService -ErrorAction SilentlyContinue
 
     Write-Host "Config"
     Write-Host "Threshold: $($config.Threshold)"
@@ -968,6 +978,8 @@ function SHOW_STATUS {
     Write-Host "TaskIntervalMinutes: $($config.TaskIntervalMinutes)"
     Write-Host "MinimumFailureIntervalSeconds: $($config.MinimumFailureIntervalSeconds)"
     Write-Host "LogName: $($config.LogName)"
+    Write-Host "EventId: $($config.EventId)"
+    Write-Host "AllowedLogonTypes: $(@($config.AllowedLogonTypes) -join ', ')"
     Write-Host "IgnoreIPs: $(@($config.IgnoreIPs) -join ', ')"
     Write-Host ""
     Write-Host "Monitor"
@@ -982,11 +994,11 @@ function SHOW_STATUS {
         Write-Host "NextRunTime: $($taskInfo.NextRunTime)"
     }
 
-    if ($null -eq $sshdService) {
-        Write-Host "sshd: not installed"
+    if ($null -eq $rdpService) {
+        Write-Host "TermService: not installed"
     }
     else {
-        Write-Host "sshd: $($sshdService.Status)"
+        Write-Host "TermService: $($rdpService.Status)"
     }
 
     Write-Host ""
@@ -1053,7 +1065,8 @@ function VIEW_RUN_LOG {
 
 function SHOW_MORE {
     Write-Host "References"
-    Write-Host "https://learn.microsoft.com/windows-server/administration/openssh/openssh_install_firstuse"
+    Write-Host "https://learn.microsoft.com/windows/security/threat-protection/auditing/event-4625"
+    Write-Host "https://learn.microsoft.com/windows-server/remote/remote-desktop-services/clients/remote-desktop-allow-access"
     Write-Host "https://learn.microsoft.com/powershell/module/netsecurity/new-netfirewallrule"
     Write-Host ""
     Write-Host "Files"
@@ -1062,7 +1075,7 @@ function SHOW_MORE {
     Write-Host "Log:    $LOG_PATH"
     Write-Host ""
     Write-Host "Useful commands"
-    Write-Host "Get-WinEvent -LogName OpenSSH/Operational -MaxEvents 20"
+    Write-Host "Get-WinEvent -FilterHashtable @{LogName='Security'; Id=4625} -MaxEvents 20"
     Write-Host "Get-ScheduledTask -TaskName Fail2BanWin-Monitor"
     Write-Host ""
     Write-Host "Advanced install example"

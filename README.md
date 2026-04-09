@@ -10,7 +10,7 @@ fail2ban 一键安装 / 卸载脚本。
 
 - **RHEL 系列**: CentOS 7/8/9, RHEL 7/8/9, Rocky Linux 8/9, AlmaLinux 8/9, Fedora
 - **Debian 系列**: Debian 9/10/11/12, Ubuntu 18.04/20.04/22.04/24.04
-- **Windows**: Windows 10/11, Windows Server（PowerShell 版，依赖 OpenSSH Server 与 Windows Defender Firewall）
+- **Windows**: Windows 10/11, Windows Server（PowerShell 版，主要保护 RDP，依赖 Windows Defender Firewall）
 
 自动检测特性：
 
@@ -158,7 +158,8 @@ Windows 查看封禁列表 : `powershell -ExecutionPolicy Bypass -File .\fail2ba
 
 **Windows 工作方式**
 
-- 通过 `OpenSSH/Operational` 事件日志识别 SSH 失败登录
+- 通过 `Security` 日志中的 `4625` 失败登录事件识别 RDP 爆破
+- 仅统计 `LogonType = 10` 的远程桌面失败登录
 - 通过 Windows Defender Firewall 自动创建和移除封禁规则
 - 通过计划任务定时扫描并清理过期封禁
 - 支持自定义忽略 IP 列表
@@ -168,7 +169,7 @@ Windows 查看封禁列表 : `powershell -ExecutionPolicy Bypass -File .\fail2ba
 
 `2026-04-09` : Windows 支持
 
-- 新增 `fail2ban.ps1`，支持 Windows OpenSSH 登录失败检测
+- 新增 `fail2ban.ps1`，支持 Windows RDP 登录失败检测
 - 使用 Windows Firewall 执行 IP 封禁 / 解封
 - 使用计划任务实现持续监控
 - 增加 `install-win.bat` / `uninstall-win.bat` 本地一键安装与卸载
