@@ -330,7 +330,21 @@ function TEST_FAILURE_MESSAGE {
         return $false
     }
 
-    return ($normalized -match "failed password|authentication failed|invalid user|maximum authentication attempts|unable to authenticate|connection closed by authenticating user|\bfail\b")
+    $knownPatterns = @(
+        "(?i)failed password for(?: invalid user)? .+ from [0-9a-f:\.]+",
+        "(?i)failed publickey for(?: invalid user)? .+ from [0-9a-f:\.]+",
+        "(?i)invalid user .+ from [0-9a-f:\.]+",
+        "(?i)maximum authentication attempts exceeded for(?: invalid user)? .+ from [0-9a-f:\.]+",
+        "(?i)pam: authentication failure for .+ from [0-9a-f:\.]+"
+    )
+
+    foreach ($pattern in $knownPatterns) {
+        if ($normalized -match $pattern) {
+            return $true
+        }
+    }
+
+    return $false
 }
 
 function GET_EVENT_DATA_MAP {
@@ -371,8 +385,8 @@ function TEST_FAILURE_EVENT {
         return $true
     }
 
-    foreach ($key in @("result", "status", "keywords", "message")) {
-        if ($EventData.ContainsKey($key) -and $EventData[$key] -match "(?i)fail|invalid|authenticate") {
+    foreach ($key in @("payload", "message")) {
+        if ($EventData.ContainsKey($key) -and (TEST_FAILURE_MESSAGE -Message $EventData[$key])) {
             return $true
         }
     }
@@ -538,6 +552,92 @@ function GET_EFFECTIVE_FAILURE_COUNT {
     }
 
     return $count
+}
+
+function PARSE_RULE_EXPIRATION {
+    param(
+        [string]$Description
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Description)) {
+        return $null
+    }
+
+    $match = [regex]::Match($Description, "(?i)until\s+(?<ts>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})")
+    if (-not $match.Success) {
+        return $null
+    }
+
+    $parsedValue = $null
+    if ([datetime]::TryParse($match.Groups["ts"].Value, [ref]$parsedValue)) {
+        return $parsedValue.ToString("o")
+    }
+
+    return $null
+}
+
+function GET_FIREWALL_BLOCK_ENTRIES {
+    param(
+        [Parameter(Mandatory = $true)]
+        [psobject]$Config,
+
+        [Parameter(Mandatory = $true)]
+        [psobject]$State
+    )
+
+    $entries = @()
+    $rules = @(Get-NetFirewallRule -Group $Config.RuleGroup -ErrorAction SilentlyContinue | Where-Object {
+        $_.DisplayName -like "$($Config.RulePrefix)-*"
+    })
+
+    foreach ($rule in $rules) {
+        $remoteAddresses = @($rule | Get-NetFirewallAddressFilter | Select-Object -ExpandProperty RemoteAddress)
+
+        foreach ($remoteAddress in $remoteAddresses) {
+            if (-not (TEST_IP_ADDRESS -Candidate $remoteAddress)) {
+                continue
+            }
+
+            $existingEntry = GET_BLOCK_ENTRY -State $State -IP $remoteAddress
+            $expiresAt = PARSE_RULE_EXPIRATION -Description $rule.Description
+            if ($null -eq $expiresAt) {
+                if ($null -ne $existingEntry) {
+                    $expiresAt = $existingEntry.ExpiresAt
+                }
+                else {
+                    $expiresAt = (Get-Date).AddHours([int]$Config.BanHours).ToString("o")
+                }
+            }
+
+            $blockedAt = if ($null -ne $existingEntry) {
+                $existingEntry.BlockedAt
+            }
+            else {
+                (Get-Date).ToString("o")
+            }
+
+            $entries += [pscustomobject]@{
+                IP        = $remoteAddress
+                RuleName  = $rule.DisplayName
+                BlockedAt = $blockedAt
+                ExpiresAt = $expiresAt
+            }
+        }
+    }
+
+    return @($entries | Sort-Object IP -Unique)
+}
+
+function SYNC_STATE_WITH_FIREWALL {
+    param(
+        [Parameter(Mandatory = $true)]
+        [psobject]$Config,
+
+        [Parameter(Mandatory = $true)]
+        [psobject]$State
+    )
+
+    $State.BlockedIPs = GET_FIREWALL_BLOCK_ENTRIES -Config $Config -State $State
 }
 
 function GET_BLOCK_ENTRY {
@@ -752,7 +852,16 @@ function INSTALL_FAIL2BAN_WINDOWS {
     }
 
     SAVE_CONFIG -Config $config
-    SAVE_STATE -State (NEW_DEFAULT_STATE)
+
+    if (Test-Path -LiteralPath $STATE_PATH) {
+        $state = LOAD_STATE
+    }
+    else {
+        $state = NEW_DEFAULT_STATE
+    }
+
+    SYNC_STATE_WITH_FIREWALL -Config $config -State $state
+    SAVE_STATE -State $state
     REGISTER_MONITOR_TASK -Config $config
 
     $sshdService = Get-Service sshd -ErrorAction SilentlyContinue
@@ -799,6 +908,9 @@ function START_FAIL2BAN_WINDOWS {
     ASSERT_INSTALLED
 
     $config = LOAD_CONFIG
+    $state = LOAD_STATE
+    SYNC_STATE_WITH_FIREWALL -Config $config -State $state
+    SAVE_STATE -State $state
     $task = GET_TASK -TaskName $config.TaskName
     if ($null -eq $task) {
         REGISTER_MONITOR_TASK -Config $config
@@ -838,6 +950,8 @@ function SHOW_STATUS {
 
     $config = LOAD_CONFIG
     $state = LOAD_STATE
+    SYNC_STATE_WITH_FIREWALL -Config $config -State $state
+    SAVE_STATE -State $state
     $task = GET_TASK -TaskName $config.TaskName
     $taskInfo = $null
 
@@ -883,7 +997,10 @@ function SHOW_STATUS {
 function SHOW_BLOCKLIST {
     ASSERT_INSTALLED
 
+    $config = LOAD_CONFIG
     $state = LOAD_STATE
+    SYNC_STATE_WITH_FIREWALL -Config $config -State $state
+    SAVE_STATE -State $state
     $entries = @($state.BlockedIPs | Sort-Object IP)
 
     if ($entries.Count -eq 0) {
@@ -900,6 +1017,7 @@ function UNLOCK_IP {
 
     $config = LOAD_CONFIG
     $state = LOAD_STATE
+    SYNC_STATE_WITH_FIREWALL -Config $config -State $state
 
     $targetIP = $Value
     if ([string]::IsNullOrWhiteSpace($targetIP)) {
@@ -961,6 +1079,7 @@ function INVOKE_SCAN {
     try {
         $config = LOAD_CONFIG
         $state = LOAD_STATE
+        SYNC_STATE_WITH_FIREWALL -Config $config -State $state
 
         REMOVE_EXPIRED_BLOCKS -Config $config -State $state
         REMOVE_EXPIRED_FAILURES -Config $config -State $state

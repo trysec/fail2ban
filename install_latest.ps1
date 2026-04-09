@@ -51,4 +51,10 @@ if (-not [string]::IsNullOrWhiteSpace($IgnoreIPs)) {
 }
 
 $process = Start-Process -FilePath "powershell.exe" -ArgumentList $argumentList -Wait -PassThru
-exit $process.ExitCode
+$global:LASTEXITCODE = $process.ExitCode
+
+if (-not [string]::IsNullOrWhiteSpace($MyInvocation.MyCommand.Path)) {
+    exit $process.ExitCode
+}
+
+return $process.ExitCode
