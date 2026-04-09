@@ -346,38 +346,6 @@ function TEST_IGNORED_IP {
     return $false
 }
 
-function TEST_FAILURE_MESSAGE {
-    param(
-        [string]$Message
-    )
-
-    if ([string]::IsNullOrWhiteSpace($Message)) {
-        return $false
-    }
-
-    $normalized = $Message.ToLowerInvariant()
-
-    if ($normalized -match "accepted password|accepted publickey|session opened|starting session|subsystem request") {
-        return $false
-    }
-
-    $knownPatterns = @(
-        "failed password for(?: invalid user)? .+ from [0-9a-f:\.]+",
-        "failed publickey for(?: invalid user)? .+ from [0-9a-f:\.]+",
-        "invalid user .+ from [0-9a-f:\.]+",
-        "maximum authentication attempts exceeded for(?: invalid user)? .+ from [0-9a-f:\.]+",
-        "pam: authentication failure for .+ from [0-9a-f:\.]+"
-    )
-
-    foreach ($pattern in $knownPatterns) {
-        if ($normalized -match $pattern) {
-            return $true
-        }
-    }
-
-    return $false
-}
-
 function GET_EVENT_DATA_MAP {
     param(
         [Parameter(Mandatory = $true)]
@@ -444,27 +412,6 @@ function GET_REMOTE_IP_FROM_EVENT {
             if (TEST_IP_ADDRESS -Candidate $candidate) {
                 return $candidate
             }
-        }
-    }
-
-    $message = [string]$Event.Message
-    if ([string]::IsNullOrWhiteSpace($message)) {
-        $message = $Event.ToXml()
-    }
-
-    $match = [regex]::Match($message, "(?im)\bfrom\s+(?<ip>[0-9a-f:\.]+)\b")
-    if ($match.Success) {
-        $candidate = $match.Groups["ip"].Value
-        if (TEST_IP_ADDRESS -Candidate $candidate) {
-            return $candidate
-        }
-    }
-
-    $allCandidates = [regex]::Matches($message, "(?im)(?<ip>(?:\d{1,3}\.){3}\d{1,3}|(?:(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}))")
-    foreach ($candidateMatch in $allCandidates) {
-        $candidate = $candidateMatch.Groups["ip"].Value
-        if (TEST_IP_ADDRESS -Candidate $candidate) {
-            return $candidate
         }
     }
 
