@@ -1,5 +1,23 @@
 #!/bin/bash
 
+CHECK_WINDOWS_SHELL(){
+    local uname_s
+    uname_s="$(uname -s 2>/dev/null)"
+
+    case "${uname_s}" in
+        MINGW*|MSYS*|CYGWIN*)
+            echo "Detected Windows shell environment."
+            echo "Please use the PowerShell version instead:"
+            echo "powershell -ExecutionPolicy Bypass -File .\\fail2ban.ps1 {install|uninstall|runlog|more}"
+            echo "powershell -ExecutionPolicy Bypass -File .\\fail2ban.ps1 {start|stop|restart|status}"
+            echo "powershell -ExecutionPolicy Bypass -File .\\fail2ban.ps1 {blocklist|unlock} [ip]"
+            exit 1
+            ;;
+    esac
+}
+
+CHECK_WINDOWS_SHELL
+
 # 检测操作系统
 CHECK_OS(){
     # 优先使用 /etc/os-release，这是现代Linux的标准
