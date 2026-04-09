@@ -53,7 +53,15 @@ if (-not [string]::IsNullOrWhiteSpace($IgnoreIPs)) {
 $process = Start-Process -FilePath "powershell.exe" -ArgumentList $argumentList -Wait -PassThru
 $global:LASTEXITCODE = $process.ExitCode
 
-$scriptPath = if ($MyInvocation.MyCommand.CommandType -eq "ExternalScript") { $MyInvocation.MyCommand.Path } else { $null }
+$scriptPath = $null
+$myCommand = $MyInvocation.MyCommand
+if ($null -ne $myCommand) {
+    $pathProperty = $myCommand.PSObject.Properties["Path"]
+    if ($null -ne $pathProperty) {
+        $scriptPath = $pathProperty.Value
+    }
+}
+
 if (-not [string]::IsNullOrWhiteSpace($scriptPath)) {
     exit $process.ExitCode
 }

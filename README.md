@@ -50,7 +50,9 @@ Windows GitHub 一键安装：
 ```powershell
 $ProgressPreference = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-& ([ScriptBlock]::Create((New-Object System.Net.WebClient).DownloadString('https://raw.githubusercontent.com/trysec/fail2ban/master/install_latest.ps1')))
+$tmp = Join-Path $env:TEMP 'install_latest.ps1'
+(New-Object System.Net.WebClient).DownloadFile('https://raw.githubusercontent.com/trysec/fail2ban/master/install_latest.ps1', $tmp)
+& $tmp
 ```
 
 Windows GitHub 一键卸载：
@@ -58,7 +60,9 @@ Windows GitHub 一键卸载：
 ```powershell
 $ProgressPreference = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-& ([ScriptBlock]::Create((New-Object System.Net.WebClient).DownloadString('https://raw.githubusercontent.com/trysec/fail2ban/master/install_latest.ps1'))) -Uninstall
+$tmp = Join-Path $env:TEMP 'install_latest.ps1'
+(New-Object System.Net.WebClient).DownloadFile('https://raw.githubusercontent.com/trysec/fail2ban/master/install_latest.ps1', $tmp)
+& $tmp -Uninstall
 ```
 
 Windows GitHub 高级安装示例：
@@ -66,19 +70,21 @@ Windows GitHub 高级安装示例：
 ```powershell
 $ProgressPreference = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-& ([ScriptBlock]::Create((New-Object System.Net.WebClient).DownloadString('https://raw.githubusercontent.com/trysec/fail2ban/master/install_latest.ps1'))) -Threshold 8 -BanHours 24 -FindTimeMinutes 30 -MinimumFailureIntervalSeconds 3 -IgnoreIPs '127.0.0.1,::1,10.0.0.5'
+$tmp = Join-Path $env:TEMP 'install_latest.ps1'
+(New-Object System.Net.WebClient).DownloadFile('https://raw.githubusercontent.com/trysec/fail2ban/master/install_latest.ps1', $tmp)
+& $tmp -Threshold 8 -BanHours 24 -FindTimeMinutes 30 -MinimumFailureIntervalSeconds 3 -IgnoreIPs '127.0.0.1,::1,10.0.0.5'
 ```
 
 Windows CMD 一键安装：
 
 ```bat
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference = 'SilentlyContinue'; [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; & ([ScriptBlock]::Create((New-Object System.Net.WebClient).DownloadString('https://raw.githubusercontent.com/trysec/fail2ban/master/install_latest.ps1')))"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference='SilentlyContinue'; [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $tmp=Join-Path $env:TEMP 'install_latest.ps1'; (New-Object System.Net.WebClient).DownloadFile('https://raw.githubusercontent.com/trysec/fail2ban/master/install_latest.ps1',$tmp); & $tmp"
 ```
 
 Windows CMD 一键卸载：
 
 ```bat
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference = 'SilentlyContinue'; [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; & ([ScriptBlock]::Create((New-Object System.Net.WebClient).DownloadString('https://raw.githubusercontent.com/trysec/fail2ban/master/install_latest.ps1'))) -Uninstall"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference='SilentlyContinue'; [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $tmp=Join-Path $env:TEMP 'install_latest.ps1'; (New-Object System.Net.WebClient).DownloadFile('https://raw.githubusercontent.com/trysec/fail2ban/master/install_latest.ps1',$tmp); & $tmp -Uninstall"
 ```
 
 # 详解
