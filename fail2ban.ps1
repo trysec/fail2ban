@@ -212,6 +212,160 @@ function LOAD_CONFIG {
     return MERGE_WITH_DEFAULTS -SourceObject $config -Defaults $DEFAULT_CONFIG
 }
 
+function GET_OPTIONAL_PROPERTY_VALUE {
+    param(
+        [object]$Object,
+        [string]$PropertyName
+    )
+
+    if ($null -eq $Object) {
+        return $null
+    }
+
+    $property = $Object.PSObject.Properties[$PropertyName]
+    if ($null -eq $property) {
+        return $null
+    }
+
+    return $property.Value
+}
+
+function NORMALIZE_DATETIME_STRING {
+    param(
+        [object]$Value
+    )
+
+    if ($null -eq $Value) {
+        return $null
+    }
+
+    $text = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return $null
+    }
+
+    $parsed = $null
+    if ([datetime]::TryParse($text, [ref]$parsed)) {
+        return $parsed.ToString("o")
+    }
+
+    return $null
+}
+
+function NORMALIZE_BLOCK_ENTRY {
+    param(
+        [Parameter(Mandatory = $true)]
+        [psobject]$Config,
+
+        [object]$Entry
+    )
+
+    if ($null -eq $Entry) {
+        return $null
+    }
+
+    $ip = if ($Entry -is [string]) {
+        [string]$Entry
+    }
+    else {
+        [string](GET_OPTIONAL_PROPERTY_VALUE -Object $Entry -PropertyName "IP")
+    }
+
+    if (-not (TEST_IP_ADDRESS -Candidate $ip)) {
+        return $null
+    }
+
+    $ruleName = [string](GET_OPTIONAL_PROPERTY_VALUE -Object $Entry -PropertyName "RuleName")
+    if ([string]::IsNullOrWhiteSpace($ruleName)) {
+        $ruleName = GET_RULE_NAME -Config $Config -IP $ip
+    }
+
+    $blockedAt = NORMALIZE_DATETIME_STRING -Value (GET_OPTIONAL_PROPERTY_VALUE -Object $Entry -PropertyName "BlockedAt")
+    if ($null -eq $blockedAt) {
+        $blockedAt = (Get-Date).ToString("o")
+    }
+
+    $expiresAt = NORMALIZE_DATETIME_STRING -Value (GET_OPTIONAL_PROPERTY_VALUE -Object $Entry -PropertyName "ExpiresAt")
+    if ($null -eq $expiresAt) {
+        $expiresAt = NORMALIZE_DATETIME_STRING -Value (GET_OPTIONAL_PROPERTY_VALUE -Object $Entry -PropertyName "Expires")
+    }
+    if ($null -eq $expiresAt) {
+        $expiresAt = ([datetime]$blockedAt).AddHours([int]$Config.BanHours).ToString("o")
+    }
+
+    return [pscustomobject]@{
+        IP        = $ip
+        RuleName  = $ruleName
+        BlockedAt = $blockedAt
+        ExpiresAt = $expiresAt
+    }
+}
+
+function NORMALIZE_FAILURE_ENTRY {
+    param(
+        [object]$Entry
+    )
+
+    if ($null -eq $Entry) {
+        return $null
+    }
+
+    $ip = if ($Entry -is [string]) {
+        [string]$Entry
+    }
+    else {
+        [string](GET_OPTIONAL_PROPERTY_VALUE -Object $Entry -PropertyName "IP")
+    }
+
+    if (-not (TEST_IP_ADDRESS -Candidate $ip)) {
+        return $null
+    }
+
+    $occurredAt = NORMALIZE_DATETIME_STRING -Value (GET_OPTIONAL_PROPERTY_VALUE -Object $Entry -PropertyName "OccurredAt")
+    if ($null -eq $occurredAt) {
+        $occurredAt = NORMALIZE_DATETIME_STRING -Value (GET_OPTIONAL_PROPERTY_VALUE -Object $Entry -PropertyName "TimeCreated")
+    }
+    if ($null -eq $occurredAt) {
+        return $null
+    }
+
+    return [pscustomobject]@{
+        IP         = $ip
+        OccurredAt = $occurredAt
+        RecordId   = GET_OPTIONAL_PROPERTY_VALUE -Object $Entry -PropertyName "RecordId"
+    }
+}
+
+function NORMALIZE_STATE {
+    param(
+        [Parameter(Mandatory = $true)]
+        [psobject]$Config,
+
+        [Parameter(Mandatory = $true)]
+        [psobject]$State
+    )
+
+    $normalizedBlocked = @()
+    foreach ($entry in @($State.BlockedIPs)) {
+        $normalizedEntry = NORMALIZE_BLOCK_ENTRY -Config $Config -Entry $entry
+        if ($null -ne $normalizedEntry) {
+            $normalizedBlocked += $normalizedEntry
+        }
+    }
+
+    $normalizedFailures = @()
+    foreach ($entry in @($State.RecentFailures)) {
+        $normalizedEntry = NORMALIZE_FAILURE_ENTRY -Entry $entry
+        if ($null -ne $normalizedEntry) {
+            $normalizedFailures += $normalizedEntry
+        }
+    }
+
+    $State.BlockedIPs = $normalizedBlocked
+    $State.RecentFailures = $normalizedFailures
+    $State.LastScanAt = NORMALIZE_DATETIME_STRING -Value $State.LastScanAt
+}
+
 function SAVE_CONFIG {
     param(
         [Parameter(Mandatory = $true)]
@@ -235,6 +389,10 @@ function UPDATE_SCHEDULED_TASK_IF_NEEDED {
 }
 
 function LOAD_STATE {
+    param(
+        [psobject]$Config = $null
+    )
+
     if (-not (Test-Path -LiteralPath $STATE_PATH)) {
         $state = NEW_DEFAULT_STATE
         SAVE_STATE -State $state
@@ -256,16 +414,40 @@ function LOAD_STATE {
         $state | Add-Member -NotePropertyName "LastScanAt" -NotePropertyValue $null -Force
     }
 
+    if ($null -eq $Config) {
+        if (Test-Path -LiteralPath $CONFIG_PATH) {
+            $Config = LOAD_CONFIG
+        }
+        else {
+            $Config = [pscustomobject]$DEFAULT_CONFIG
+        }
+    }
+
+    NORMALIZE_STATE -Config $Config -State $state
+
     return $state
 }
 
 function SAVE_STATE {
     param(
         [Parameter(Mandatory = $true)]
-        [psobject]$State
+        [psobject]$State,
+
+        [psobject]$Config = $null
     )
 
     ENSURE_BASE_DIR
+
+    if ($null -eq $Config) {
+        if (Test-Path -LiteralPath $CONFIG_PATH) {
+            $Config = LOAD_CONFIG
+        }
+        else {
+            $Config = [pscustomobject]$DEFAULT_CONFIG
+        }
+    }
+
+    NORMALIZE_STATE -Config $Config -State $State
 
     $blocked = @()
     if ($null -ne $State.BlockedIPs) {
