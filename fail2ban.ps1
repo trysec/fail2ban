@@ -648,6 +648,10 @@ function GET_RECENT_FAILURES {
         }
     }
 
+    if ($null -eq $failures) {
+        return @()
+    }
+
     return @($failures)
 }
 
@@ -669,14 +673,17 @@ function MERGE_RECENT_FAILURES {
         [Parameter(Mandatory = $true)]
         [psobject]$State,
 
-        [Parameter(Mandatory = $true)]
-        [object[]]$NewFailures
+        [object[]]$NewFailures = @()
     )
 
     $merged = @()
     $seen = @{}
 
     foreach ($failure in @($State.RecentFailures) + @($NewFailures)) {
+        if ($null -eq $failure) {
+            continue
+        }
+
         $key = GET_FAILURE_KEY -Failure $failure
         if ($seen.ContainsKey($key)) {
             continue
