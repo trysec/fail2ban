@@ -42,12 +42,22 @@ $DEFAULT_CONFIG = [ordered]@{
     InstalledScriptPath           = $INSTALLED_SCRIPT_PATH
 }
 
+function GET_SCRIPT_COMMAND_PREFIX {
+    $scriptPath = $PSCommandPath
+    if ([string]::IsNullOrWhiteSpace($scriptPath)) {
+        $scriptPath = ".\fail2ban.ps1"
+    }
+
+    return "powershell -ExecutionPolicy Bypass -File `"$scriptPath`""
+}
+
 function SHOW_USAGE {
-    Write-Host "powershell -ExecutionPolicy Bypass -File .\fail2ban.ps1 {install|uninstall|runlog|more}"
-    Write-Host "powershell -ExecutionPolicy Bypass -File .\fail2ban.ps1 {start|stop|restart|status}"
-    Write-Host "powershell -ExecutionPolicy Bypass -File .\fail2ban.ps1 {blocklist|bl|unlock|ul} [ip]"
-    Write-Host "powershell -ExecutionPolicy Bypass -File .\fail2ban.ps1 whitelist {list|add|remove} [ip]"
-    Write-Host "powershell -ExecutionPolicy Bypass -File .\fail2ban.ps1 config {show|set} [key] [value]"
+    $commandPrefix = GET_SCRIPT_COMMAND_PREFIX
+    Write-Host "$commandPrefix {install|uninstall|runlog|more}"
+    Write-Host "$commandPrefix {start|stop|restart|status}"
+    Write-Host "$commandPrefix {blocklist|bl|unlock|ul} [ip]"
+    Write-Host "$commandPrefix whitelist {list|add|remove} [ip]"
+    Write-Host "$commandPrefix config {show|set} [key] [value]"
     Write-Host ""
     Write-Host "Windows mode monitors failed RDP login events and blocks source IPs with Windows Firewall."
 }
@@ -1357,6 +1367,7 @@ function VIEW_RUN_LOG {
 }
 
 function SHOW_MORE {
+    $commandPrefix = GET_SCRIPT_COMMAND_PREFIX
     Write-Host "References"
     Write-Host "https://learn.microsoft.com/windows/security/threat-protection/auditing/event-4625"
     Write-Host "https://learn.microsoft.com/windows-server/remote/remote-desktop-services/clients/remote-desktop-allow-access"
@@ -1373,11 +1384,11 @@ function SHOW_MORE {
     Write-Host "Useful commands"
     Write-Host "Get-WinEvent -FilterHashtable @{LogName='Security'; Id=4625} -MaxEvents 20"
     Write-Host "Get-ScheduledTask -TaskName Fail2BanWin-Monitor"
-    Write-Host ".\fail2ban.ps1 whitelist list"
-    Write-Host ".\fail2ban.ps1 config show"
+    Write-Host "$commandPrefix whitelist list"
+    Write-Host "$commandPrefix config show"
     Write-Host ""
     Write-Host "Advanced install example"
-    Write-Host ".\fail2ban.ps1 install -Threshold 8 -BanHours 24 -FindTimeMinutes 30 -MinimumFailureIntervalSeconds 3 -IgnoreIPs '127.0.0.1,::1,10.0.0.5'"
+    Write-Host "$commandPrefix install -Threshold 8 -BanHours 24 -FindTimeMinutes 30 -MinimumFailureIntervalSeconds 3 -IgnoreIPs '127.0.0.1,::1,10.0.0.5'"
 }
 
 function INVOKE_SCAN {
