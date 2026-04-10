@@ -55,7 +55,7 @@ Windows 本地一键卸载：
 uninstall-win.bat
 ```
 
-Windows GitHub 一键安装：
+Windows PowerShell 一键安装（GitHub）：
 
 ```powershell
 $ProgressPreference = 'SilentlyContinue'
@@ -65,7 +65,7 @@ $tmp = Join-Path $env:TEMP 'install_latest.ps1'
 powershell -NoProfile -ExecutionPolicy Bypass -File $tmp
 ```
 
-Windows GitHub 一键卸载：
+Windows PowerShell 一键卸载（GitHub）：
 
 ```powershell
 $ProgressPreference = 'SilentlyContinue'
@@ -75,7 +75,7 @@ $tmp = Join-Path $env:TEMP 'install_latest.ps1'
 powershell -NoProfile -ExecutionPolicy Bypass -File $tmp -Uninstall
 ```
 
-Windows GitHub 高级安装示例：
+Windows PowerShell 高级安装示例（GitHub）：
 
 ```powershell
 $ProgressPreference = 'SilentlyContinue'
@@ -85,13 +85,13 @@ $tmp = Join-Path $env:TEMP 'install_latest.ps1'
 powershell -NoProfile -ExecutionPolicy Bypass -File $tmp -Threshold 8 -BanHours 24 -FindTimeMinutes 30 -MinimumFailureIntervalSeconds 3 -IgnoreIPs '127.0.0.1,::1,10.0.0.5'
 ```
 
-Windows CMD 一键安装：
+Windows CMD 一键安装（GitHub）：
 
 ```bat
 powershell -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference='SilentlyContinue'; [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $tmp=Join-Path $env:TEMP 'install_latest.ps1'; (New-Object System.Net.WebClient).DownloadFile('https://raw.githubusercontent.com/trysec/fail2ban/master/install_latest.ps1',$tmp); powershell -NoProfile -ExecutionPolicy Bypass -File $tmp"
 ```
 
-Windows CMD 一键卸载：
+Windows CMD 一键卸载（GitHub）：
 
 ```bat
 powershell -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference='SilentlyContinue'; [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $tmp=Join-Path $env:TEMP 'install_latest.ps1'; (New-Object System.Net.WebClient).DownloadFile('https://raw.githubusercontent.com/trysec/fail2ban/master/install_latest.ps1',$tmp); powershell -NoProfile -ExecutionPolicy Bypass -File $tmp -Uninstall"

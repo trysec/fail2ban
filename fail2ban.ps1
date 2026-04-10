@@ -801,7 +801,16 @@ function GET_FIREWALL_BLOCK_ENTRIES {
         }
     }
 
-    return @($entries | Group-Object IP | ForEach-Object { $_.Group | Select-Object -First 1 } | Sort-Object IP)
+    $uniqueEntries = @(
+        $entries |
+        Where-Object { $null -ne $_ } |
+        Group-Object IP |
+        ForEach-Object { $_.Group | Select-Object -First 1 } |
+        Where-Object { $null -ne $_ } |
+        Sort-Object IP
+    )
+
+    return $uniqueEntries
 }
 
 function SYNC_STATE_WITH_FIREWALL {
@@ -931,6 +940,15 @@ function REMOVE_EXPIRED_BLOCKS {
 
     $now = Get-Date
     foreach ($entry in @($State.BlockedIPs)) {
+        if ($null -eq $entry) {
+            continue
+        }
+
+        $expiresAt = GET_OPTIONAL_PROPERTY_VALUE -Object $entry -PropertyName "ExpiresAt"
+        if ($null -eq $expiresAt) {
+            continue
+        }
+
         if ([datetime]$entry.ExpiresAt -le $now) {
             UNBLOCK_IP_INTERNAL -Config $Config -State $State -IP $entry.IP -Silent
         }
