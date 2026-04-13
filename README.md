@@ -27,35 +27,14 @@ wget "https://raw.githubusercontent.com/trysec/fail2ban/refs/heads/master/fail2b
 
 ![image](https://i.loli.net/2018/02/15/5a8533967e7f1.png)
 
-Windows 使用：
+Windows 只需要记住两个脚本：
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\fail2ban.ps1 install
-```
+- `install_latest.ps1`
+  推荐入口。适合首次安装，执行时可直接带参数。
+- `C:\ProgramData\Fail2BanWin\fail2ban.ps1`
+  安装完成后的主脚本。以后查看状态、解封、改配置都用它。
 
-Windows 路径说明：
-
-- `.\fail2ban.ps1` 仅适用于你当前目录已经有脚本文件时，例如仓库目录或手动下载目录
-- GitHub 一键安装只会临时下载 `install_latest.ps1` 到 `%TEMP%` 后执行
-- 安装完成后，Windows 默认工作目录固定为 `C:\ProgramData\Fail2BanWin`
-- 安装后的主脚本路径：`C:\ProgramData\Fail2BanWin\fail2ban.ps1`
-- 配置文件路径：`C:\ProgramData\Fail2BanWin\config.json`
-- 状态文件路径：`C:\ProgramData\Fail2BanWin\state.json`
-- 日志文件路径：`C:\ProgramData\Fail2BanWin\monitor.log`
-
-Windows 本地一键安装：
-
-```bat
-install-win.bat
-```
-
-Windows 本地一键卸载：
-
-```bat
-uninstall-win.bat
-```
-
-Windows PowerShell 一键安装（GitHub）：
+Windows 推荐安装方式：
 
 ```powershell
 $ProgressPreference = 'SilentlyContinue'
@@ -65,7 +44,30 @@ $tmp = Join-Path $env:TEMP 'install_latest.ps1'
 powershell -NoProfile -ExecutionPolicy Bypass -File $tmp
 ```
 
-Windows PowerShell 一键卸载（GitHub）：
+Windows 推荐参数安装示例：
+
+```powershell
+$ProgressPreference = 'SilentlyContinue'
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$tmp = Join-Path $env:TEMP 'install_latest.ps1'
+(New-Object System.Net.WebClient).DownloadFile('https://raw.githubusercontent.com/trysec/fail2ban/master/install_latest.ps1', $tmp)
+powershell -NoProfile -ExecutionPolicy Bypass -File $tmp -Threshold 3 -BanHours 24 -FindTimeMinutes 1 -MinimumFailureIntervalSeconds 1 -IgnoreIPs '127.0.0.1,::1' -AllowedLogonTypes '3,10' -DisableAccountLockout
+```
+
+Windows 安装完成后的常用路径：
+
+- 主脚本：`C:\ProgramData\Fail2BanWin\fail2ban.ps1`
+- 配置文件：`C:\ProgramData\Fail2BanWin\config.json`
+- 状态文件：`C:\ProgramData\Fail2BanWin\state.json`
+- 日志文件：`C:\ProgramData\Fail2BanWin\monitor.log`
+
+Windows 其他安装方式：
+
+- 已经下载仓库到本地时，可以执行 `powershell -ExecutionPolicy Bypass -File .\fail2ban.ps1 install`
+- 也可以双击 `install-win.bat`
+- CMD 里也能调用 PowerShell 安装，但一般不如直接用上面的 PowerShell 推荐方式清晰
+
+Windows 卸载：
 
 ```powershell
 $ProgressPreference = 'SilentlyContinue'
@@ -73,48 +75,6 @@ $ProgressPreference = 'SilentlyContinue'
 $tmp = Join-Path $env:TEMP 'install_latest.ps1'
 (New-Object System.Net.WebClient).DownloadFile('https://raw.githubusercontent.com/trysec/fail2ban/master/install_latest.ps1', $tmp)
 powershell -NoProfile -ExecutionPolicy Bypass -File $tmp -Uninstall
-```
-
-Windows PowerShell 高级安装示例（GitHub）：
-
-```powershell
-$ProgressPreference = 'SilentlyContinue'
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-$tmp = Join-Path $env:TEMP 'install_latest.ps1'
-(New-Object System.Net.WebClient).DownloadFile('https://raw.githubusercontent.com/trysec/fail2ban/master/install_latest.ps1', $tmp)
-powershell -NoProfile -ExecutionPolicy Bypass -File $tmp -Threshold 8 -BanHours 24 -FindTimeMinutes 30 -MinimumFailureIntervalSeconds 3 -IgnoreIPs '127.0.0.1,::1,10.0.0.5'
-```
-
-Windows 服务器公网防爆破推荐安装示例（同时防 `LogonType 3` 和 `10`）：
-
-```powershell
-$ProgressPreference = 'SilentlyContinue'
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-$tmp = Join-Path $env:TEMP 'install_latest.ps1'
-(New-Object System.Net.WebClient).DownloadFile('https://raw.githubusercontent.com/trysec/fail2ban/master/install_latest.ps1', $tmp)
-powershell -NoProfile -ExecutionPolicy Bypass -File $tmp -Threshold 3 -BanHours 24 -FindTimeMinutes 30 -MinimumFailureIntervalSeconds 3 -IgnoreIPs '127.0.0.1,::1,你的出口IP' -AllowedLogonTypes '3,10'
-```
-
-Windows 强行满足方案（关闭账户锁定，直接按 IP 封禁）：
-
-```powershell
-$ProgressPreference = 'SilentlyContinue'
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-$tmp = Join-Path $env:TEMP 'install_latest.ps1'
-(New-Object System.Net.WebClient).DownloadFile('https://raw.githubusercontent.com/trysec/fail2ban/master/install_latest.ps1', $tmp)
-powershell -NoProfile -ExecutionPolicy Bypass -File $tmp -Threshold 1 -BanHours 24 -FindTimeMinutes 30 -MinimumFailureIntervalSeconds 1 -IgnoreIPs '127.0.0.1,::1,你的出口IP' -AllowedLogonTypes '3,10' -DisableAccountLockout
-```
-
-Windows CMD 一键安装（GitHub）：
-
-```bat
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference='SilentlyContinue'; [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $tmp=Join-Path $env:TEMP 'install_latest.ps1'; (New-Object System.Net.WebClient).DownloadFile('https://raw.githubusercontent.com/trysec/fail2ban/master/install_latest.ps1',$tmp); powershell -NoProfile -ExecutionPolicy Bypass -File $tmp"
-```
-
-Windows CMD 一键卸载（GitHub）：
-
-```bat
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference='SilentlyContinue'; [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $tmp=Join-Path $env:TEMP 'install_latest.ps1'; (New-Object System.Net.WebClient).DownloadFile('https://raw.githubusercontent.com/trysec/fail2ban/master/install_latest.ps1',$tmp); powershell -NoProfile -ExecutionPolicy Bypass -File $tmp -Uninstall"
 ```
 
 # 详解
@@ -127,7 +87,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference='Sil
 
 查看更多信息 : `bash fail2ban.sh more`
 
-Windows 安装 : `powershell -ExecutionPolicy Bypass -File .\fail2ban.ps1 install`
+Windows 推荐安装 : `install_latest.ps1`
+
+Windows 本地安装 : `powershell -ExecutionPolicy Bypass -File .\fail2ban.ps1 install`
 
 注：Windows 交互式安装会依次询问失败次数、封禁时长、统计窗口、白名单、`AllowedLogonTypes`，以及是否关闭 Windows 账户锁定策略。
 
