@@ -11,6 +11,8 @@ param(
     [int]$TaskIntervalMinutes = 0,
     [int]$MinimumFailureIntervalSeconds = 0,
     [string]$IgnoreIPs = "",
+    [string]$AllowedLogonTypes = "",
+    [switch]$DisableAccountLockout,
 
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$ExtraArgs
@@ -37,8 +39,10 @@ $DEFAULT_CONFIG = [ordered]@{
     AllowedLogonTypes             = @("10")
     RuleGroup                     = "Fail2Ban Windows"
     RulePrefix                    = "Fail2BanWin-Block"
-    TaskName                      = "Fail2BanWin-Monitor"
+    TaskName                      = "Fail2BanWin-Cleanup"
+    EventTaskName                 = "Fail2BanWin-EventMonitor"
     IgnoreIPs                     = @("127.0.0.1", "::1")
+    DisableAccountLockout         = $false
     InstalledScriptPath           = $INSTALLED_SCRIPT_PATH
 }
 
@@ -56,6 +60,7 @@ function SHOW_USAGE {
     Write-Host "$commandPrefix {install|uninstall|runlog|more}"
     Write-Host "$commandPrefix {start|stop|restart|status}"
     Write-Host "$commandPrefix {blocklist|bl|unlock|ul} [ip]"
+    Write-Host "$commandPrefix lockout {show|disable}"
     Write-Host "$commandPrefix whitelist {list|add|remove} [ip]"
     Write-Host "$commandPrefix config {show|set} [key] [value]"
     Write-Host ""
@@ -181,6 +186,43 @@ function ASSERT_VALID_IP_LIST {
     }
 }
 
+function NORMALIZE_LOGON_TYPE_LIST {
+    param(
+        [string]$Value,
+        [string[]]$DefaultValues = @()
+    )
+
+    $items = CONVERT_TO_STRING_ARRAY -Value $Value -DefaultValues $DefaultValues
+    $normalizedItems = @()
+
+    foreach ($item in @($items)) {
+        $parsedValue = 0
+        if (-not (TEST_POSITIVE_INT -Candidate ([string]$item) -ParsedValue ([ref]$parsedValue))) {
+            throw "Invalid logon type: $item"
+        }
+
+        $normalizedItems += [string]$parsedValue
+    }
+
+    return @($normalizedItems | Select-Object -Unique)
+}
+
+function GET_LOGON_TYPE_SETTING {
+    param(
+        [string]$Prompt,
+        [string[]]$DefaultValues,
+        [string]$ProvidedValue
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($ProvidedValue)) {
+        return NORMALIZE_LOGON_TYPE_LIST -Value $ProvidedValue -DefaultValues $DefaultValues
+    }
+
+    $defaultText = ($DefaultValues -join ", ")
+    $inputValue = Read-Host "$Prompt, default $defaultText"
+    return NORMALIZE_LOGON_TYPE_LIST -Value $inputValue -DefaultValues $DefaultValues
+}
+
 function NEW_DEFAULT_STATE {
     return [pscustomobject]@{
         BlockedIPs      = @()
@@ -254,7 +296,7 @@ function NORMALIZE_DATETIME_STRING {
         return $null
     }
 
-    $parsed = $null
+    [datetime]$parsed = [datetime]::MinValue
     if ([datetime]::TryParse($text, [ref]$parsed)) {
         return $parsed.ToString("o")
     }
@@ -392,9 +434,15 @@ function UPDATE_SCHEDULED_TASK_IF_NEEDED {
         [psobject]$Config
     )
 
-    $task = GET_TASK -TaskName $Config.TaskName
-    if ($null -ne $task) {
-        REGISTER_MONITOR_TASK -Config $Config
+    $cleanupTask = GET_TASK -TaskName $Config.TaskName
+    $eventTask = GET_TASK -TaskName $Config.EventTaskName
+
+    if ($null -ne $cleanupTask) {
+        REGISTER_CLEANUP_TASK -Config $Config
+    }
+
+    if ($null -ne $eventTask) {
+        REGISTER_EVENT_TASK -Config $Config
     }
 }
 
@@ -487,6 +535,35 @@ function ENSURE_MONITOR_LOG {
     $null = Get-WinEvent -ListLog $LogName -ErrorAction Stop
 }
 
+function SHOW_ACCOUNT_LOCKOUT_POLICY {
+    & net.exe accounts
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to query Windows account policy."
+    }
+}
+
+function DISABLE_ACCOUNT_LOCKOUT_POLICY {
+    param(
+        [switch]$Silent,
+        [switch]$SkipConfigUpdate
+    )
+
+    ASSERT_ADMIN
+
+    & net.exe accounts /lockoutthreshold:0 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to disable Windows account lockout policy."
+    }
+
+    if (-not $SkipConfigUpdate -and (Test-Path -LiteralPath $CONFIG_PATH)) {
+        $config = LOAD_CONFIG
+        $config.DisableAccountLockout = $true
+        SAVE_CONFIG -Config $config
+    }
+
+    WRITE_LOG -Message "Disabled Windows account lockout policy (lockoutthreshold=0)." -Silent:$Silent
+}
+
 function INSTALL_SCRIPT_BINARY {
     ENSURE_BASE_DIR
 
@@ -519,7 +596,7 @@ function TEST_IP_ADDRESS {
         return $false
     }
 
-    $address = $null
+    [System.Net.IPAddress]$address = $null
     return [System.Net.IPAddress]::TryParse($Candidate, [ref]$address)
 }
 
@@ -684,13 +761,18 @@ function MERGE_RECENT_FAILURES {
             continue
         }
 
-        $key = GET_FAILURE_KEY -Failure $failure
+        $normalizedFailure = NORMALIZE_FAILURE_ENTRY -Entry $failure
+        if ($null -eq $normalizedFailure) {
+            continue
+        }
+
+        $key = GET_FAILURE_KEY -Failure $normalizedFailure
         if ($seen.ContainsKey($key)) {
             continue
         }
 
         $seen[$key] = $true
-        $merged += $failure
+        $merged += $normalizedFailure
     }
 
     $State.RecentFailures = $merged
@@ -751,7 +833,7 @@ function PARSE_RULE_EXPIRATION {
         return $null
     }
 
-    $parsedValue = $null
+    [datetime]$parsedValue = [datetime]::MinValue
     if ([datetime]::TryParse($match.Groups["ts"].Value, [ref]$parsedValue)) {
         return $parsedValue.ToString("o")
     }
@@ -842,7 +924,12 @@ function GET_BLOCK_ENTRY {
     )
 
     foreach ($entry in @($State.BlockedIPs)) {
-        if ($entry.IP -eq $IP) {
+        if ($null -eq $entry) {
+            continue
+        }
+
+        $entryIP = GET_OPTIONAL_PROPERTY_VALUE -Object $entry -PropertyName "IP"
+        if ($entryIP -eq $IP) {
             return $entry
         }
     }
@@ -859,7 +946,15 @@ function REMOVE_BLOCK_ENTRY {
         [string]$IP
     )
 
-    $State.BlockedIPs = @($State.BlockedIPs | Where-Object { $_.IP -ne $IP })
+    $State.BlockedIPs = @(
+        $State.BlockedIPs | Where-Object {
+            if ($null -eq $_) {
+                return $false
+            }
+
+            (GET_OPTIONAL_PROPERTY_VALUE -Object $_ -PropertyName "IP") -ne $IP
+        }
+    )
 }
 
 function BLOCK_IP {
@@ -986,13 +1081,22 @@ function RELEASE_SCAN_LOCK {
     }
 }
 
-function REGISTER_MONITOR_TASK {
+function GET_SCAN_COMMAND_ARGUMENTS {
     param(
         [Parameter(Mandatory = $true)]
         [psobject]$Config
     )
 
-    $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$($Config.InstalledScriptPath)`" scan"
+    return "-NoProfile -ExecutionPolicy Bypass -File `"$($Config.InstalledScriptPath)`" scan"
+}
+
+function REGISTER_CLEANUP_TASK {
+    param(
+        [Parameter(Mandatory = $true)]
+        [psobject]$Config
+    )
+
+    $arguments = GET_SCAN_COMMAND_ARGUMENTS -Config $Config
     $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $arguments
     $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes ([int]$Config.TaskIntervalMinutes)) -RepetitionDuration (New-TimeSpan -Days 3650)
     $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
@@ -1006,6 +1110,30 @@ function REGISTER_MONITOR_TASK {
         -Settings $settings `
         -Description "Fail2Ban-like RDP brute-force protection for Windows." `
         -Force | Out-Null
+}
+
+function REGISTER_EVENT_TASK {
+    param(
+        [Parameter(Mandatory = $true)]
+        [psobject]$Config
+    )
+
+    $subscription = "*[System[(EventID=$($Config.EventId))]]"
+    $taskCommand = "powershell.exe {0}" -f (GET_SCAN_COMMAND_ARGUMENTS -Config $Config)
+
+    & schtasks.exe `
+        /Create `
+        /TN $Config.EventTaskName `
+        /RU SYSTEM `
+        /SC ONEVENT `
+        /EC $Config.LogName `
+        /MO $subscription `
+        /TR $taskCommand `
+        /F | Out-Null
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to register event task $($Config.EventTaskName)."
+    }
 }
 
 function GET_TASK {
@@ -1028,12 +1156,13 @@ function INSTALL_FAIL2BAN_WINDOWS {
 
     ENSURE_BASE_DIR
 
-    $thresholdValue = GET_NUMERIC_SETTING -ProvidedValue $Threshold -Prompt "Allowed RDP failures before ban" -DefaultValue ([int]$DEFAULT_CONFIG.Threshold)
+    $thresholdValue = GET_NUMERIC_SETTING -ProvidedValue $Threshold -Prompt "Allowed failed logons before ban" -DefaultValue ([int]$DEFAULT_CONFIG.Threshold)
     $banHoursValue = GET_NUMERIC_SETTING -ProvidedValue $BanHours -Prompt "Ban duration in hours" -DefaultValue ([int]$DEFAULT_CONFIG.BanHours)
     $findTimeValue = GET_NUMERIC_SETTING -ProvidedValue $FindTimeMinutes -Prompt "Failure window in minutes" -DefaultValue ([int]$DEFAULT_CONFIG.FindTimeMinutes)
     $intervalValue = GET_NUMERIC_SETTING -ProvidedValue $TaskIntervalMinutes -Prompt "Scan interval in minutes" -DefaultValue ([int]$DEFAULT_CONFIG.TaskIntervalMinutes)
     $minimumFailureIntervalValue = GET_NUMERIC_SETTING -ProvidedValue $MinimumFailureIntervalSeconds -Prompt "Minimum seconds between counted failures from the same IP" -DefaultValue ([int]$DEFAULT_CONFIG.MinimumFailureIntervalSeconds)
     $ignoreIPsValue = GET_LIST_SETTING -Prompt "Ignore IP list, comma separated" -DefaultValues @($DEFAULT_CONFIG.IgnoreIPs) -ProvidedValue $IgnoreIPs
+    $allowedLogonTypesValue = GET_LOGON_TYPE_SETTING -Prompt "Allowed logon types, comma separated" -DefaultValues @($DEFAULT_CONFIG.AllowedLogonTypes) -ProvidedValue $AllowedLogonTypes
 
     ENSURE_MONITOR_LOG -LogName $DEFAULT_CONFIG.LogName
     INSTALL_SCRIPT_BINARY
@@ -1046,12 +1175,18 @@ function INSTALL_FAIL2BAN_WINDOWS {
         MinimumFailureIntervalSeconds = $minimumFailureIntervalValue
         LogName                       = $DEFAULT_CONFIG.LogName
         EventId                       = $DEFAULT_CONFIG.EventId
-        AllowedLogonTypes             = $DEFAULT_CONFIG.AllowedLogonTypes
+        AllowedLogonTypes             = $allowedLogonTypesValue
         RuleGroup                     = $DEFAULT_CONFIG.RuleGroup
         RulePrefix                    = $DEFAULT_CONFIG.RulePrefix
         TaskName                      = $DEFAULT_CONFIG.TaskName
+        EventTaskName                 = $DEFAULT_CONFIG.EventTaskName
         IgnoreIPs                     = $ignoreIPsValue
+        DisableAccountLockout         = [bool]$DisableAccountLockout
         InstalledScriptPath           = $INSTALLED_SCRIPT_PATH
+    }
+
+    if ($DisableAccountLockout) {
+        DISABLE_ACCOUNT_LOCKOUT_POLICY -Silent -SkipConfigUpdate
     }
 
     SAVE_CONFIG -Config $config
@@ -1065,7 +1200,8 @@ function INSTALL_FAIL2BAN_WINDOWS {
 
     SYNC_STATE_WITH_FIREWALL -Config $config -State $state
     SAVE_STATE -State $state
-    REGISTER_MONITOR_TASK -Config $config
+    REGISTER_CLEANUP_TASK -Config $config
+    REGISTER_EVENT_TASK -Config $config
 
     $rdpService = Get-Service TermService -ErrorAction SilentlyContinue
     if ($null -eq $rdpService) {
@@ -1084,11 +1220,17 @@ function REMOVE_FAIL2BAN_WINDOWS {
 
     $config = LOAD_CONFIG
 
-    $task = GET_TASK -TaskName $config.TaskName
-    if ($null -ne $task) {
-        Disable-ScheduledTask -TaskName $config.TaskName | Out-Null
-        Stop-ScheduledTask -TaskName $config.TaskName -ErrorAction SilentlyContinue | Out-Null
-        Unregister-ScheduledTask -TaskName $config.TaskName -Confirm:$false
+    foreach ($taskName in @($config.TaskName, $config.EventTaskName)) {
+        if ([string]::IsNullOrWhiteSpace($taskName)) {
+            continue
+        }
+
+        $task = GET_TASK -TaskName $taskName
+        if ($null -ne $task) {
+            Disable-ScheduledTask -TaskName $taskName | Out-Null
+            Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue | Out-Null
+            Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
+        }
     }
 
     $rules = Get-NetFirewallRule -Group $config.RuleGroup -ErrorAction SilentlyContinue
@@ -1114,12 +1256,18 @@ function START_FAIL2BAN_WINDOWS {
     $state = LOAD_STATE
     SYNC_STATE_WITH_FIREWALL -Config $config -State $state
     SAVE_STATE -State $state
-    $task = GET_TASK -TaskName $config.TaskName
-    if ($null -eq $task) {
-        REGISTER_MONITOR_TASK -Config $config
+    $cleanupTask = GET_TASK -TaskName $config.TaskName
+    if ($null -eq $cleanupTask) {
+        REGISTER_CLEANUP_TASK -Config $config
+    }
+
+    $eventTask = GET_TASK -TaskName $config.EventTaskName
+    if ($null -eq $eventTask) {
+        REGISTER_EVENT_TASK -Config $config
     }
 
     Enable-ScheduledTask -TaskName $config.TaskName | Out-Null
+    Enable-ScheduledTask -TaskName $config.EventTaskName | Out-Null
     Start-ScheduledTask -TaskName $config.TaskName
     WRITE_LOG -Message "Scheduled monitor started."
 }
@@ -1129,14 +1277,24 @@ function STOP_FAIL2BAN_WINDOWS {
     ASSERT_INSTALLED
 
     $config = LOAD_CONFIG
-    $task = GET_TASK -TaskName $config.TaskName
-    if ($null -eq $task) {
-        Write-Host "Monitor task does not exist."
+    $cleanupTask = GET_TASK -TaskName $config.TaskName
+    $eventTask = GET_TASK -TaskName $config.EventTaskName
+
+    if ($null -eq $cleanupTask -and $null -eq $eventTask) {
+        Write-Host "Monitor tasks do not exist."
         return
     }
 
-    Disable-ScheduledTask -TaskName $config.TaskName | Out-Null
-    Stop-ScheduledTask -TaskName $config.TaskName -ErrorAction SilentlyContinue | Out-Null
+    if ($null -ne $cleanupTask) {
+        Disable-ScheduledTask -TaskName $config.TaskName | Out-Null
+        Stop-ScheduledTask -TaskName $config.TaskName -ErrorAction SilentlyContinue | Out-Null
+    }
+
+    if ($null -ne $eventTask) {
+        Disable-ScheduledTask -TaskName $config.EventTaskName | Out-Null
+        Stop-ScheduledTask -TaskName $config.EventTaskName -ErrorAction SilentlyContinue | Out-Null
+    }
+
     WRITE_LOG -Message "Scheduled monitor stopped."
 }
 
@@ -1155,11 +1313,16 @@ function SHOW_STATUS {
     $state = LOAD_STATE
     SYNC_STATE_WITH_FIREWALL -Config $config -State $state
     SAVE_STATE -State $state
-    $task = GET_TASK -TaskName $config.TaskName
-    $taskInfo = $null
+    $cleanupTask = GET_TASK -TaskName $config.TaskName
+    $cleanupTaskInfo = $null
+    if ($null -ne $cleanupTask) {
+        $cleanupTaskInfo = Get-ScheduledTaskInfo -TaskName $config.TaskName
+    }
 
-    if ($null -ne $task) {
-        $taskInfo = Get-ScheduledTaskInfo -TaskName $config.TaskName
+    $eventTask = GET_TASK -TaskName $config.EventTaskName
+    $eventTaskInfo = $null
+    if ($null -ne $eventTask) {
+        $eventTaskInfo = Get-ScheduledTaskInfo -TaskName $config.EventTaskName
     }
 
     $rdpService = Get-Service TermService -ErrorAction SilentlyContinue
@@ -1174,17 +1337,27 @@ function SHOW_STATUS {
     Write-Host "EventId: $($config.EventId)"
     Write-Host "AllowedLogonTypes: $(@($config.AllowedLogonTypes) -join ', ')"
     Write-Host "IgnoreIPs: $(@($config.IgnoreIPs) -join ', ')"
+    Write-Host "DisableAccountLockout: $($config.DisableAccountLockout)"
     Write-Host ""
     Write-Host "Monitor"
 
-    if ($null -eq $task) {
-        Write-Host "Task: missing"
+    if ($null -eq $cleanupTask) {
+        Write-Host "CleanupTask: missing"
     }
     else {
-        Write-Host "Task: $($task.State)"
-        Write-Host "LastRunTime: $($taskInfo.LastRunTime)"
-        Write-Host "LastTaskResult: $($taskInfo.LastTaskResult)"
-        Write-Host "NextRunTime: $($taskInfo.NextRunTime)"
+        Write-Host "CleanupTask: $($cleanupTask.State)"
+        Write-Host "CleanupLastRunTime: $($cleanupTaskInfo.LastRunTime)"
+        Write-Host "CleanupLastTaskResult: $($cleanupTaskInfo.LastTaskResult)"
+        Write-Host "CleanupNextRunTime: $($cleanupTaskInfo.NextRunTime)"
+    }
+
+    if ($null -eq $eventTask) {
+        Write-Host "EventTask: missing"
+    }
+    else {
+        Write-Host "EventTask: $($eventTask.State)"
+        Write-Host "EventLastRunTime: $($eventTaskInfo.LastRunTime)"
+        Write-Host "EventLastTaskResult: $($eventTaskInfo.LastTaskResult)"
     }
 
     if ($null -eq $rdpService) {
@@ -1239,7 +1412,16 @@ function UNLOCK_IP {
 
     if ($targetIP -eq "all") {
         foreach ($entry in @($state.BlockedIPs)) {
-            UNBLOCK_IP_INTERNAL -Config $config -State $state -IP $entry.IP
+            if ($null -eq $entry) {
+                continue
+            }
+
+            $entryIP = GET_OPTIONAL_PROPERTY_VALUE -Object $entry -PropertyName "IP"
+            if ([string]::IsNullOrWhiteSpace([string]$entryIP)) {
+                continue
+            }
+
+            UNBLOCK_IP_INTERNAL -Config $config -State $state -IP $entryIP
         }
 
         SAVE_STATE -State $state
@@ -1375,6 +1557,9 @@ function SET_CONFIG_VALUE {
             ASSERT_VALID_IP_LIST -IPs $ips
             $config.IgnoreIPs = @($ips | Select-Object -Unique)
         }
+        "allowedlogontypes" {
+            $config.AllowedLogonTypes = NORMALIZE_LOGON_TYPE_LIST -Value $rawValue -DefaultValues @($config.AllowedLogonTypes)
+        }
         default {
             throw "Unsupported config key: $key"
         }
@@ -1408,12 +1593,15 @@ function SHOW_MORE {
     Write-Host ""
     Write-Host "Useful commands"
     Write-Host "Get-WinEvent -FilterHashtable @{LogName='Security'; Id=4625} -MaxEvents 20"
-    Write-Host "Get-ScheduledTask -TaskName Fail2BanWin-Monitor"
+    Write-Host "Get-ScheduledTask -TaskName Fail2BanWin-Cleanup"
+    Write-Host "Get-ScheduledTask -TaskName Fail2BanWin-EventMonitor"
+    Write-Host "$commandPrefix lockout show"
     Write-Host "$commandPrefix whitelist list"
     Write-Host "$commandPrefix config show"
     Write-Host ""
     Write-Host "Advanced install example"
-    Write-Host "$commandPrefix install -Threshold 8 -BanHours 24 -FindTimeMinutes 30 -MinimumFailureIntervalSeconds 3 -IgnoreIPs '127.0.0.1,::1,10.0.0.5'"
+    Write-Host "$commandPrefix install -Threshold 3 -BanHours 24 -FindTimeMinutes 30 -MinimumFailureIntervalSeconds 3 -IgnoreIPs '127.0.0.1,::1,10.0.0.5' -AllowedLogonTypes '3,10'"
+    Write-Host "$commandPrefix install -Threshold 1 -BanHours 24 -FindTimeMinutes 30 -MinimumFailureIntervalSeconds 1 -IgnoreIPs '127.0.0.1,::1,10.0.0.5' -AllowedLogonTypes '3,10' -DisableAccountLockout"
 }
 
 function INVOKE_SCAN {
@@ -1486,6 +1674,19 @@ switch ($Command.ToLowerInvariant()) {
     }
     "ul" {
         UNLOCK_IP
+    }
+    "lockout" {
+        switch ($Value.ToLowerInvariant()) {
+            "show" {
+                SHOW_ACCOUNT_LOCKOUT_POLICY
+            }
+            "disable" {
+                DISABLE_ACCOUNT_LOCKOUT_POLICY
+            }
+            default {
+                Write-Host "Usage: .\fail2ban.ps1 lockout {show|disable}"
+            }
+        }
     }
     "whitelist" {
         switch ($Value.ToLowerInvariant()) {

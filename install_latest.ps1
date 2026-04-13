@@ -5,7 +5,9 @@ param(
     [int]$FindTimeMinutes = 0,
     [int]$TaskIntervalMinutes = 0,
     [int]$MinimumFailureIntervalSeconds = 0,
-    [string]$IgnoreIPs = ""
+    [string]$IgnoreIPs = "",
+    [string]$AllowedLogonTypes = "",
+    [switch]$DisableAccountLockout
 )
 
 Set-StrictMode -Version Latest
@@ -48,6 +50,14 @@ if ($MinimumFailureIntervalSeconds -gt 0) {
 
 if (-not [string]::IsNullOrWhiteSpace($IgnoreIPs)) {
     $argumentList += @("-IgnoreIPs", $IgnoreIPs)
+}
+
+if (-not [string]::IsNullOrWhiteSpace($AllowedLogonTypes)) {
+    $argumentList += @("-AllowedLogonTypes", $AllowedLogonTypes)
+}
+
+if ($DisableAccountLockout) {
+    $argumentList += "-DisableAccountLockout"
 }
 
 $process = Start-Process -FilePath "powershell.exe" -ArgumentList $argumentList -Wait -PassThru

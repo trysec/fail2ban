@@ -85,6 +85,26 @@ $tmp = Join-Path $env:TEMP 'install_latest.ps1'
 powershell -NoProfile -ExecutionPolicy Bypass -File $tmp -Threshold 8 -BanHours 24 -FindTimeMinutes 30 -MinimumFailureIntervalSeconds 3 -IgnoreIPs '127.0.0.1,::1,10.0.0.5'
 ```
 
+Windows 服务器公网防爆破推荐安装示例（同时防 `LogonType 3` 和 `10`）：
+
+```powershell
+$ProgressPreference = 'SilentlyContinue'
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$tmp = Join-Path $env:TEMP 'install_latest.ps1'
+(New-Object System.Net.WebClient).DownloadFile('https://raw.githubusercontent.com/trysec/fail2ban/master/install_latest.ps1', $tmp)
+powershell -NoProfile -ExecutionPolicy Bypass -File $tmp -Threshold 3 -BanHours 24 -FindTimeMinutes 30 -MinimumFailureIntervalSeconds 3 -IgnoreIPs '127.0.0.1,::1,你的出口IP' -AllowedLogonTypes '3,10'
+```
+
+Windows 强行满足方案（关闭账户锁定，直接按 IP 封禁）：
+
+```powershell
+$ProgressPreference = 'SilentlyContinue'
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$tmp = Join-Path $env:TEMP 'install_latest.ps1'
+(New-Object System.Net.WebClient).DownloadFile('https://raw.githubusercontent.com/trysec/fail2ban/master/install_latest.ps1', $tmp)
+powershell -NoProfile -ExecutionPolicy Bypass -File $tmp -Threshold 1 -BanHours 24 -FindTimeMinutes 30 -MinimumFailureIntervalSeconds 1 -IgnoreIPs '127.0.0.1,::1,你的出口IP' -AllowedLogonTypes '3,10' -DisableAccountLockout
+```
+
 Windows CMD 一键安装（GitHub）：
 
 ```bat
@@ -161,6 +181,12 @@ Windows 查看配置 : `powershell -ExecutionPolicy Bypass -File C:\ProgramData\
 
 Windows 修改配置 : `powershell -ExecutionPolicy Bypass -File C:\ProgramData\Fail2BanWin\fail2ban.ps1 config set threshold 8`
 
+Windows 修改监控登录类型 : `powershell -ExecutionPolicy Bypass -File C:\ProgramData\Fail2BanWin\fail2ban.ps1 config set allowedlogontypes 3,10`
+
+Windows 查看账户锁定策略 : `powershell -ExecutionPolicy Bypass -File C:\ProgramData\Fail2BanWin\fail2ban.ps1 lockout show`
+
+Windows 关闭账户锁定策略 : `powershell -ExecutionPolicy Bypass -File C:\ProgramData\Fail2BanWin\fail2ban.ps1 lockout disable`
+
 注：`bl` 为 `block list` 简拼，`ul` 为 `un lock` 简拼，使用上是等效的。
 
 # 特性说明
@@ -185,11 +211,23 @@ Windows 修改配置 : `powershell -ExecutionPolicy Bypass -File C:\ProgramData\
 **Windows 工作方式**
 
 - 通过 `Security` 日志中的 `4625` 失败登录事件识别 RDP 爆破
-- 仅统计 `LogonType = 10` 的远程桌面失败登录
+- 默认仅统计 `LogonType = 10` 的远程桌面失败登录
+- 可通过 `AllowedLogonTypes` 扩展为 `3,10`，同时拦截网络登录和远程桌面失败登录
+- 默认同时注册周期清理任务和 `4625` 事件触发任务，避免仅靠分钟级轮询导致账号先被系统锁定
+- 可选关闭 Windows 账户锁定策略，改为完全依赖 IP 封禁
 - 通过 Windows Defender Firewall 自动创建和移除封禁规则
 - 通过计划任务定时扫描并清理过期封禁
 - 支持自定义忽略 IP 列表
 - 通过近期失败记录持久化和最小失败间隔去重，减少重复计数
+
+**Windows 防锁号建议**
+
+- 如果外网爆破主要表现为 `LogonType = 3`，请将 `AllowedLogonTypes` 设置为 `3,10`
+- `Threshold` 必须小于 Windows 本机或域策略中的账户锁定阈值，否则账号可能会先被系统锁定，再被脚本封 IP
+- 如果你必须保持“所有 IP 可访问 RDP + 使用 Administrator”，只能考虑关闭账户锁定策略，并将 `Threshold` 设置为 `1`
+- 关闭账户锁定后，来源 IP 在第一次失败后就会被脚本封禁，但不同新 IP 仍然都能各尝试一次密码
+- 对公网服务器，建议只放行你的固定出口 IP 到 `3389`，并尽量不要直接暴露 `445/139/135/5985/5986`
+- `Administrator` 是高频爆破目标，建议额外准备一个不常见名称的管理员账号用于紧急登录
 
 **Windows 支持范围**
 
