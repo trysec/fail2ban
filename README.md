@@ -129,6 +129,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference='Sil
 
 Windows 安装 : `powershell -ExecutionPolicy Bypass -File .\fail2ban.ps1 install`
 
+注：Windows 交互式安装会依次询问失败次数、封禁时长、统计窗口、白名单、`AllowedLogonTypes`，以及是否关闭 Windows 账户锁定策略。
+
 Windows 卸载 : `powershell -ExecutionPolicy Bypass -File C:\ProgramData\Fail2BanWin\fail2ban.ps1 uninstall`
 
 Windows 本地一键安装 : `install-win.bat`

@@ -20,6 +20,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$DISABLE_ACCOUNT_LOCKOUT_WAS_PROVIDED = $PSBoundParameters.ContainsKey("DisableAccountLockout")
 
 $BASE_DIR = Join-Path $env:ProgramData "Fail2BanWin"
 $CONFIG_PATH = Join-Path $BASE_DIR "config.json"
@@ -141,6 +142,36 @@ function GET_NUMERIC_SETTING {
         }
 
         Write-Host "Error: please enter a positive integer."
+    }
+}
+
+function GET_BOOLEAN_SETTING {
+    param(
+        [bool]$ProvidedValue,
+        [bool]$WasProvided,
+        [string]$Prompt,
+        [bool]$DefaultValue
+    )
+
+    if ($WasProvided) {
+        return $ProvidedValue
+    }
+
+    $defaultText = if ($DefaultValue) { "Y" } else { "N" }
+
+    while ($true) {
+        $inputValue = Read-Host "$Prompt [Y/N], default $defaultText"
+        if ([string]::IsNullOrWhiteSpace($inputValue)) {
+            return $DefaultValue
+        }
+
+        switch ($inputValue.Trim().ToLowerInvariant()) {
+            "y" { return $true }
+            "yes" { return $true }
+            "n" { return $false }
+            "no" { return $false }
+            default { Write-Host "Error: please enter Y or N." }
+        }
     }
 }
 
@@ -1163,6 +1194,7 @@ function INSTALL_FAIL2BAN_WINDOWS {
     $minimumFailureIntervalValue = GET_NUMERIC_SETTING -ProvidedValue $MinimumFailureIntervalSeconds -Prompt "Minimum seconds between counted failures from the same IP" -DefaultValue ([int]$DEFAULT_CONFIG.MinimumFailureIntervalSeconds)
     $ignoreIPsValue = GET_LIST_SETTING -Prompt "Ignore IP list, comma separated" -DefaultValues @($DEFAULT_CONFIG.IgnoreIPs) -ProvidedValue $IgnoreIPs
     $allowedLogonTypesValue = GET_LOGON_TYPE_SETTING -Prompt "Allowed logon types, comma separated" -DefaultValues @($DEFAULT_CONFIG.AllowedLogonTypes) -ProvidedValue $AllowedLogonTypes
+    $disableAccountLockoutValue = GET_BOOLEAN_SETTING -ProvidedValue ([bool]$DisableAccountLockout) -WasProvided $DISABLE_ACCOUNT_LOCKOUT_WAS_PROVIDED -Prompt "Disable Windows account lockout policy and rely on IP bans only" -DefaultValue ([bool]$DEFAULT_CONFIG.DisableAccountLockout)
 
     ENSURE_MONITOR_LOG -LogName $DEFAULT_CONFIG.LogName
     INSTALL_SCRIPT_BINARY
@@ -1181,11 +1213,11 @@ function INSTALL_FAIL2BAN_WINDOWS {
         TaskName                      = $DEFAULT_CONFIG.TaskName
         EventTaskName                 = $DEFAULT_CONFIG.EventTaskName
         IgnoreIPs                     = $ignoreIPsValue
-        DisableAccountLockout         = [bool]$DisableAccountLockout
+        DisableAccountLockout         = $disableAccountLockoutValue
         InstalledScriptPath           = $INSTALLED_SCRIPT_PATH
     }
 
-    if ($DisableAccountLockout) {
+    if ($disableAccountLockoutValue) {
         DISABLE_ACCOUNT_LOCKOUT_POLICY -Silent -SkipConfigUpdate
     }
 
