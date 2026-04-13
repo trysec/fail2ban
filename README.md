@@ -19,13 +19,38 @@ fail2ban 一键安装 / 卸载脚本。
 - ✅ **服务管理器自动适配**: systemd / sysvinit
 - ✅ **包管理器自动选择**: dnf / yum / apt-get
 
-# 使用
+# Linux
+
+## 安装
 
 ```bash
 wget "https://raw.githubusercontent.com/trysec/fail2ban/refs/heads/master/fail2ban.sh"
 ```
 
 ![image](https://i.loli.net/2018/02/15/5a8533967e7f1.png)
+
+- 安装：`bash fail2ban.sh install`
+- 卸载：`bash fail2ban.sh uninstall`
+- 查看运行日志：`bash fail2ban.sh runlog`
+- 查看更多信息：`bash fail2ban.sh more`
+
+## 服务
+
+- 启动：`bash fail2ban.sh start`
+- 停止：`bash fail2ban.sh stop`
+- 重启：`bash fail2ban.sh restart`
+- 查看状态：`bash fail2ban.sh status`
+
+## 封禁
+
+- 解除封禁：`bash fail2ban.sh {unlock|ul}`
+- 快捷解除封禁：`bash fail2ban.sh {unlock|ul} ip`
+  e.g. `bash fail2ban.sh ul 123.123.123.123`
+- 查看封禁列表：`bash fail2ban.sh {blocklist|bl}`
+
+# Windows
+
+## 安装
 
 Windows 只需要记住两个脚本：
 
@@ -67,6 +92,8 @@ Windows 其他安装方式：
 - 也可以双击 `install-win.bat`
 - CMD 里也能调用 PowerShell 安装，但一般不如直接用上面的 PowerShell 推荐方式清晰
 
+Windows 交互式安装会依次询问失败次数、封禁时长、统计窗口、白名单、`AllowedLogonTypes`，以及是否关闭 Windows 账户锁定策略。
+
 Windows 卸载：
 
 ```powershell
@@ -77,79 +104,28 @@ $tmp = Join-Path $env:TEMP 'install_latest.ps1'
 powershell -NoProfile -ExecutionPolicy Bypass -File $tmp -Uninstall
 ```
 
-# 详解
+## 服务
 
-安装 : `bash fail2ban.sh install`
+- 启动：`powershell -ExecutionPolicy Bypass -File C:\ProgramData\Fail2BanWin\fail2ban.ps1 start`
+- 停止：`powershell -ExecutionPolicy Bypass -File C:\ProgramData\Fail2BanWin\fail2ban.ps1 stop`
+- 重启：`powershell -ExecutionPolicy Bypass -File C:\ProgramData\Fail2BanWin\fail2ban.ps1 restart`
+- 查看状态：`powershell -ExecutionPolicy Bypass -File C:\ProgramData\Fail2BanWin\fail2ban.ps1 status`
+- 查看运行日志：`powershell -ExecutionPolicy Bypass -File C:\ProgramData\Fail2BanWin\fail2ban.ps1 runlog`
+- 查看更多信息：`powershell -ExecutionPolicy Bypass -File C:\ProgramData\Fail2BanWin\fail2ban.ps1 more`
 
-卸载 : `bash fail2ban.sh uninstall`
+## 封禁与配置
 
-查看运行日志 : `bash fail2ban.sh runlog`
-
-查看更多信息 : `bash fail2ban.sh more`
-
-Windows 推荐安装 : `install_latest.ps1`
-
-Windows 本地安装 : `powershell -ExecutionPolicy Bypass -File .\fail2ban.ps1 install`
-
-注：Windows 交互式安装会依次询问失败次数、封禁时长、统计窗口、白名单、`AllowedLogonTypes`，以及是否关闭 Windows 账户锁定策略。
-
-Windows 卸载 : `powershell -ExecutionPolicy Bypass -File C:\ProgramData\Fail2BanWin\fail2ban.ps1 uninstall`
-
-Windows 本地一键安装 : `install-win.bat`
-
-Windows 本地一键卸载 : `uninstall-win.bat`
-
-Windows 查看运行日志 : `powershell -ExecutionPolicy Bypass -File C:\ProgramData\Fail2BanWin\fail2ban.ps1 runlog`
-
-Windows 查看更多信息 : `powershell -ExecutionPolicy Bypass -File C:\ProgramData\Fail2BanWin\fail2ban.ps1 more`
-
-# 服务
-
-启动 : `bash fail2ban.sh start`
-
-停止 : `bash fail2ban.sh stop`
-
-重启 : `bash fail2ban.sh restart`
-
-查看状态 : `bash fail2ban.sh status`
-
-Windows 启动 : `powershell -ExecutionPolicy Bypass -File C:\ProgramData\Fail2BanWin\fail2ban.ps1 start`
-
-Windows 停止 : `powershell -ExecutionPolicy Bypass -File C:\ProgramData\Fail2BanWin\fail2ban.ps1 stop`
-
-Windows 重启 : `powershell -ExecutionPolicy Bypass -File C:\ProgramData\Fail2BanWin\fail2ban.ps1 restart`
-
-Windows 查看状态 : `powershell -ExecutionPolicy Bypass -File C:\ProgramData\Fail2BanWin\fail2ban.ps1 status`
-
-# 封禁
-
-解除封禁 : `bash fail2ban.sh {unlock|ul}`
-
-快捷解除封禁 : `bash fail2ban.sh {unlock|ul} ip` , e.g : `bash fail2ban.sh ul 123.123.123.123`
-
-查看封禁列表 : `bash fail2ban.sh {blocklist|bl}`
-
-Windows 解除封禁 : `powershell -ExecutionPolicy Bypass -File C:\ProgramData\Fail2BanWin\fail2ban.ps1 {unlock|ul}`
-
-Windows 快捷解除封禁 : `powershell -ExecutionPolicy Bypass -File C:\ProgramData\Fail2BanWin\fail2ban.ps1 {unlock|ul} ip`
-
-Windows 查看封禁列表 : `powershell -ExecutionPolicy Bypass -File C:\ProgramData\Fail2BanWin\fail2ban.ps1 {blocklist|bl}`
-
-Windows 查看白名单 : `powershell -ExecutionPolicy Bypass -File C:\ProgramData\Fail2BanWin\fail2ban.ps1 whitelist list`
-
-Windows 添加白名单 : `powershell -ExecutionPolicy Bypass -File C:\ProgramData\Fail2BanWin\fail2ban.ps1 whitelist add ip`
-
-Windows 删除白名单 : `powershell -ExecutionPolicy Bypass -File C:\ProgramData\Fail2BanWin\fail2ban.ps1 whitelist remove ip`
-
-Windows 查看配置 : `powershell -ExecutionPolicy Bypass -File C:\ProgramData\Fail2BanWin\fail2ban.ps1 config show`
-
-Windows 修改配置 : `powershell -ExecutionPolicy Bypass -File C:\ProgramData\Fail2BanWin\fail2ban.ps1 config set threshold 8`
-
-Windows 修改监控登录类型 : `powershell -ExecutionPolicy Bypass -File C:\ProgramData\Fail2BanWin\fail2ban.ps1 config set allowedlogontypes 3,10`
-
-Windows 查看账户锁定策略 : `powershell -ExecutionPolicy Bypass -File C:\ProgramData\Fail2BanWin\fail2ban.ps1 lockout show`
-
-Windows 关闭账户锁定策略 : `powershell -ExecutionPolicy Bypass -File C:\ProgramData\Fail2BanWin\fail2ban.ps1 lockout disable`
+- 解除封禁：`powershell -ExecutionPolicy Bypass -File C:\ProgramData\Fail2BanWin\fail2ban.ps1 {unlock|ul}`
+- 快捷解除封禁：`powershell -ExecutionPolicy Bypass -File C:\ProgramData\Fail2BanWin\fail2ban.ps1 {unlock|ul} ip`
+- 查看封禁列表：`powershell -ExecutionPolicy Bypass -File C:\ProgramData\Fail2BanWin\fail2ban.ps1 {blocklist|bl}`
+- 查看白名单：`powershell -ExecutionPolicy Bypass -File C:\ProgramData\Fail2BanWin\fail2ban.ps1 whitelist list`
+- 添加白名单：`powershell -ExecutionPolicy Bypass -File C:\ProgramData\Fail2BanWin\fail2ban.ps1 whitelist add ip`
+- 删除白名单：`powershell -ExecutionPolicy Bypass -File C:\ProgramData\Fail2BanWin\fail2ban.ps1 whitelist remove ip`
+- 查看配置：`powershell -ExecutionPolicy Bypass -File C:\ProgramData\Fail2BanWin\fail2ban.ps1 config show`
+- 修改配置：`powershell -ExecutionPolicy Bypass -File C:\ProgramData\Fail2BanWin\fail2ban.ps1 config set threshold 8`
+- 修改监控登录类型：`powershell -ExecutionPolicy Bypass -File C:\ProgramData\Fail2BanWin\fail2ban.ps1 config set allowedlogontypes 3,10`
+- 查看账户锁定策略：`powershell -ExecutionPolicy Bypass -File C:\ProgramData\Fail2BanWin\fail2ban.ps1 lockout show`
+- 关闭账户锁定策略：`powershell -ExecutionPolicy Bypass -File C:\ProgramData\Fail2BanWin\fail2ban.ps1 lockout disable`
 
 注：`bl` 为 `block list` 简拼，`ul` 为 `un lock` 简拼，使用上是等效的。
 
