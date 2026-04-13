@@ -198,6 +198,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File $tmp -Uninstall
 
 # 日志
 
+`2026-04-13` : Windows 强化更新
+
+- 新增 `AllowedLogonTypes` 参数与配置项，可监控 `3,10`
+- 新增 `lockout show` / `lockout disable`，支持关闭 Windows 账户锁定策略
+- 新增 `-DisableAccountLockout` 安装参数，支持按 IP 封禁模式
+- Windows 安装新增完整交互式配置，安装时可直接选择是否关闭账户锁定
+- Windows 任务改为周期清理 + `4625` 事件触发扫描
+- 修复 Windows 11 上的 `TryParse` 兼容问题和旧状态数据导致的扫描异常
+- 优化 README，拆分 Linux / Windows 独立小节并收敛 Windows 安装说明
+
 `2026-04-09` : Windows 支持
 
 - 新增 `fail2ban.ps1`，支持 Windows RDP 登录失败检测
