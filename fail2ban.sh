@@ -25,6 +25,8 @@ CHECK_WINDOWS_SHELL(){
 
 CHECK_WINDOWS_SHELL
 
+JAIL_NAME="sshd"
+
 # 检测操作系统
 CHECK_OS(){
     # 优先使用 /etc/os-release，这是现代Linux的标准
@@ -450,6 +452,27 @@ VIEW_RUN_LOG(){
     esac
 }
 
+GET_BANNED_IPS(){
+    local banned_ips=""
+
+    if banned_ips="$(fail2ban-client get "${JAIL_NAME}" banip 2>/dev/null)"; then
+        echo "${banned_ips}" | tr ',' ' '
+        return 0
+    fi
+
+    fail2ban-client status "${JAIL_NAME}" 2>/dev/null | sed -n 's/.*Banned IP list:[[:space:]]*//p' | tr ',' ' '
+}
+
+IS_IP_BANNED(){
+    local target_ip="$1"
+    local banned_ips=""
+
+    banned_ips="$(GET_BANNED_IPS)"
+    banned_ips=" ${banned_ips} "
+
+    [[ "${banned_ips}" == *" ${target_ip} "* ]]
+}
+
 case "${1}" in
     install)
         INSTALL_FAIL2BAN
@@ -470,7 +493,7 @@ case "${1}" in
         ;;
     blocklist|bl)
         if [[ -e /etc/fail2ban/jail.local ]]; then
-            fail2ban-client status sshd
+            fail2ban-client status "${JAIL_NAME}"
         else
             echo "fail2ban尚未安装."
             exit 1
@@ -497,8 +520,28 @@ case "${1}" in
             exit 1
         fi
 
-        fail2ban-client set sshd unbanip ${UNLOCK_IP}
-        echo "IP ${UNLOCK_IP} 已解封."
+        if ! fail2ban-client status "${JAIL_NAME}" >/dev/null 2>&1; then
+            echo "错误: fail2ban jail ${JAIL_NAME} 不存在或未运行."
+            exit 1
+        fi
+
+        if ! IS_IP_BANNED "${UNLOCK_IP}"; then
+            echo "IP ${UNLOCK_IP} 当前不在 fail2ban 封禁列表中."
+            echo "如果它仍然无法连接，请检查云安全组、系统防火墙手工规则或其他网络限制."
+            exit 0
+        fi
+
+        if ! fail2ban-client set "${JAIL_NAME}" unbanip "${UNLOCK_IP}"; then
+            echo "错误: fail2ban 执行解封失败."
+            exit 1
+        fi
+
+        if IS_IP_BANNED "${UNLOCK_IP}"; then
+            echo "错误: IP ${UNLOCK_IP} 仍然出现在 fail2ban 封禁列表中."
+            exit 1
+        fi
+
+        echo "IP ${UNLOCK_IP} 已从 fail2ban 封禁列表移除."
         ;;
     more)
         echo "【参考文章】
