@@ -313,7 +313,9 @@ INSTALL_FAIL2BAN_FROM_SOURCE(){
     }
 
     if command -v python3 &> /dev/null; then
-        RUN_LOW_PRIORITY python3 "$source_dir/setup.py" install --without-tests || {
+        (
+            cd "$source_dir" && RUN_LOW_PRIORITY python3 setup.py install --without-tests
+        ) || {
             rm -rf "$work_dir"
             return 1
         }
