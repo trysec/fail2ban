@@ -242,6 +242,37 @@ DETECT_LOG_BACKEND(){
     fi
 }
 
+ENSURE_SYSTEMD_BACKEND_SUPPORT(){
+    if python3 -c 'import systemd.journal' >/dev/null 2>&1; then
+        return 0
+    fi
+
+    echo "检测到 systemd journal 后端需要 python3-systemd，正在安装..."
+    case "${release}" in
+        centos)
+            if IS_EL9_OR_NEWER; then
+                echo "错误: EL9 上缺少 python3-systemd，脚本不会自动调用 dnf 安装以避免卡住。"
+                echo "      可先安装 rsyslog 生成 /var/log/secure，或手动安装 python3-systemd 后重试。"
+                return 1
+            fi
+
+            if command -v dnf &> /dev/null; then
+                RUN_DNF -y install python3-systemd
+            else
+                RUN_YUM -y install python3-systemd
+            fi
+            ;;
+        debian|ubuntu)
+            RUN_APT_GET -y install python3-systemd
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+
+    python3 -c 'import systemd.journal' >/dev/null 2>&1
+}
+
 # 启动/停止/重启服务的通用函数
 SERVICE_CONTROL(){
     local service_name=$1
@@ -285,6 +316,7 @@ INSTALL_FAIL2BAN_FROM_SOURCE(){
     local work_dir="/tmp/fail2ban-install.$$"
     local archive_path="${work_dir}/fail2ban.tar.gz"
     local source_dir="${work_dir}/fail2ban-${FAIL2BAN_SOURCE_VERSION}"
+    local install_record="/etc/fail2ban/source-install-files.txt"
     local fail2ban_server_bin=""
     local fail2ban_client_bin=""
 
@@ -312,9 +344,11 @@ INSTALL_FAIL2BAN_FROM_SOURCE(){
         return 1
     }
 
+    mkdir -p /etc/fail2ban /run/fail2ban /var/lib/fail2ban
+
     if command -v python3 &> /dev/null; then
         (
-            cd "$source_dir" && RUN_LOW_PRIORITY python3 setup.py install --without-tests
+            cd "$source_dir" && RUN_LOW_PRIORITY python3 setup.py install --without-tests --record "$install_record"
         ) || {
             rm -rf "$work_dir"
             return 1
@@ -325,8 +359,6 @@ INSTALL_FAIL2BAN_FROM_SOURCE(){
         return 1
     fi
 
-    mkdir -p /etc/fail2ban /run/fail2ban /var/lib/fail2ban
-
     fail2ban_server_bin="$(command -v fail2ban-server 2>/dev/null || true)"
     fail2ban_client_bin="$(command -v fail2ban-client 2>/dev/null || true)"
 
@@ -335,6 +367,8 @@ INSTALL_FAIL2BAN_FROM_SOURCE(){
         rm -rf "$work_dir"
         return 1
     fi
+
+    echo "source" > /etc/fail2ban/install-method
 
     cat > /etc/systemd/system/fail2ban.service <<EOF
 [Unit]
@@ -380,7 +414,7 @@ ASSERT_FAIL2BAN_INSTALLED(){
     fi
 
     if [[ "$ok" != true ]]; then
-        echo "请检查软件源是否包含 EPEL/CRB，然后重新执行: bash fail2ban.sh install"
+        echo "请检查 fail2ban 安装输出、Python 环境和系统服务文件，然后重新执行: bash fail2ban.sh install"
         return 1
     fi
 
@@ -400,6 +434,14 @@ GET_EL_MAJOR_VERSION(){
 
 IS_EL9_OR_NEWER(){
     local major
+
+    case "$OS" in
+        centos|rhel|rocky|almalinux)
+            ;;
+        *)
+            return 1
+            ;;
+    esac
 
     major="$(GET_EL_MAJOR_VERSION)"
     [[ "$major" =~ ^[0-9]+$ ]] && (( major >= 9 ))
@@ -603,11 +645,11 @@ ENSURE_AUTH_LOG_FILE(){
 
     case "${release}" in
         centos)
-            echo "正在启用 rsyslog 日志文件后端，避免 fail2ban 扫描完整 journal..."
             if IS_EL9_OR_NEWER; then
                 return 1
             fi
 
+            echo "正在启用 rsyslog 日志文件后端，避免 fail2ban 扫描完整 journal..."
             if ! command -v rsyslogd &> /dev/null; then
                 INSTALL_PACKAGE rsyslog || return 1
             fi
@@ -748,8 +790,11 @@ INSTALL_FAIL2BAN(){
 
 REMOVE_FAIL2BAN(){
     ASSERT_ROOT
+    local installed_from_source=false
 
-    if [[ ! -e /etc/fail2ban/jail.local ]]; then
+    if [[ ! -e /etc/fail2ban/jail.local ]] && \
+        [[ ! -e /etc/fail2ban/install-method ]] && \
+        ! command -v fail2ban-client &> /dev/null; then
         echo "fail2ban尚未安装."
         exit 0
     fi
@@ -757,21 +802,35 @@ REMOVE_FAIL2BAN(){
     CHECK_OS
     SERVICE_CONTROL fail2ban stop
 
-    case "${release}" in
-        centos)
-            if command -v dnf &> /dev/null; then
-                RUN_DNF -y remove fail2ban
-            else
-                RUN_YUM -y remove fail2ban
-            fi
-            ;;
-        debian|ubuntu)
-            RUN_APT_GET -y remove --purge fail2ban
-            RUN_APT_GET -y autoremove
-            ;;
-    esac
+    if [[ -f /etc/fail2ban/install-method ]] && grep -q '^source$' /etc/fail2ban/install-method; then
+        installed_from_source=true
+        if [[ -f /etc/fail2ban/source-install-files.txt ]]; then
+            while IFS= read -r installed_file; do
+                [[ -n "$installed_file" && -e "$installed_file" ]] && rm -f "$installed_file"
+            done < /etc/fail2ban/source-install-files.txt
+        fi
+    else
+        case "${release}" in
+            centos)
+                if command -v dnf &> /dev/null; then
+                    RUN_DNF -y remove fail2ban
+                else
+                    RUN_YUM -y remove fail2ban
+                fi
+                ;;
+            debian|ubuntu)
+                RUN_APT_GET -y remove --purge fail2ban
+                RUN_APT_GET -y autoremove
+                ;;
+        esac
+    fi
 
-    rm -rf /etc/fail2ban/jail.local
+    if [[ "$installed_from_source" == true ]]; then
+        rm -f /etc/systemd/system/fail2ban.service
+    fi
+    rm -rf /etc/systemd/system/fail2ban.service.d
+    systemctl daemon-reload 2>/dev/null || true
+    rm -rf /etc/fail2ban/jail.local /etc/fail2ban/install-method /etc/fail2ban/source-install-files.txt
     echo "fail2ban已卸载."
 }
 
@@ -801,6 +860,11 @@ SETTING_FAIL2BAN(){
 
     # 生成配置
     if [[ "$USE_SYSTEMD_BACKEND" == true ]]; then
+        ENSURE_SYSTEMD_BACKEND_SUPPORT || {
+            echo "错误: systemd journal 后端依赖安装失败。"
+            exit 1
+        }
+
         # 使用 systemd journal
         cat > /etc/fail2ban/jail.local <<EOF
 [DEFAULT]
@@ -887,15 +951,21 @@ ENABLE_FAIL2BAN(){
     echo "fail2ban 开机启动已启用。"
 }
 
-EMERGENCY_STOP_FAIL2BAN(){
+STOP_FAIL2BAN(){
     ASSERT_ROOT
     SERVICE_CONTROL fail2ban stop >/dev/null 2>&1 || true
     pkill -f fail2ban-server >/dev/null 2>&1 || true
     pkill -9 -f fail2ban-server >/dev/null 2>&1 || true
+    echo "fail2ban 已停止。"
+}
+
+EMERGENCY_STOP_FAIL2BAN(){
+    ASSERT_ROOT
+    STOP_FAIL2BAN >/dev/null 2>&1 || true
     pkill -9 -f dnf >/dev/null 2>&1 || true
     pkill -9 -f yum >/dev/null 2>&1 || true
     pkill -9 -f rpm >/dev/null 2>&1 || true
-    echo "fail2ban 已停止。CPU 恢复后可重新执行: bash fail2ban.sh install"
+    echo "fail2ban 和包管理器进程已停止。CPU 恢复后可重新执行: bash fail2ban.sh install"
 }
 
 DIAGNOSE_LOAD(){
@@ -906,11 +976,11 @@ DIAGNOSE_LOAD(){
     SERVICE_CONTROL fail2ban status 2>/dev/null || echo "fail2ban service 不可用或未安装"
     echo
     echo "【dnf/yum/rpm】"
-    {
-        pgrep -a -f dnf
-        pgrep -a -f yum
-        pgrep -a -f rpm
-    } || echo "未发现 dnf/yum/rpm 进程"
+    local found_pkg_process=false
+    pgrep -a -f dnf && found_pkg_process=true
+    pgrep -a -f yum && found_pkg_process=true
+    pgrep -a -f rpm && found_pkg_process=true
+    [[ "$found_pkg_process" == true ]] || echo "未发现 dnf/yum/rpm 进程"
 }
 
 VIEW_RUN_LOG(){
@@ -1049,7 +1119,7 @@ fail2ban-client -h"
         START_FAIL2BAN
         ;;
     stop)
-        EMERGENCY_STOP_FAIL2BAN
+        STOP_FAIL2BAN
         ;;
     restart)
         RESTART_FAIL2BAN

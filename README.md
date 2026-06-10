@@ -18,6 +18,7 @@ fail2ban 一键安装 / 卸载脚本。
 - ✅ **日志系统自动检测**: journald / rsyslog / syslog-ng
 - ✅ **服务管理器自动适配**: systemd / sysvinit
 - ✅ **包管理器自动选择**: dnf / yum / apt-get
+- ✅ **小规格 EL9 适配**: CentOS/RHEL/Rocky/AlmaLinux 9 默认跳过 EPEL 元数据，使用 fail2ban 源码包安装
 
 # Linux
 
@@ -31,14 +32,19 @@ wget "https://raw.githubusercontent.com/trysec/fail2ban/refs/heads/master/fail2b
 
 - 安装：`bash fail2ban.sh install`
 - 卸载：`bash fail2ban.sh uninstall`
+- 诊断 CPU / 服务状态：`bash fail2ban.sh {diagnose|diag}`
+- 紧急停止 fail2ban 和包管理器进程：`bash fail2ban.sh {emergency-stop|safe-stop}`
 - 查看运行日志：`bash fail2ban.sh runlog`
 - 查看更多信息：`bash fail2ban.sh more`
+
+Linux 安装只写入配置，不会自动启动 fail2ban，也不会默认启用开机自启。安装完成后先执行 `bash fail2ban.sh diagnose` 确认 CPU 正常，再手动执行 `bash fail2ban.sh start`。
 
 ## 服务
 
 - 启动：`bash fail2ban.sh start`
 - 停止：`bash fail2ban.sh stop`
 - 重启：`bash fail2ban.sh restart`
+- 启用开机自启：`bash fail2ban.sh enable`
 - 查看状态：`bash fail2ban.sh status`
 
 ## 封禁
@@ -135,13 +141,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File $tmp -Uninstall
 
 - 脚本会自动检测系统的防火墙类型并选择最佳配置
 - 优先级：firewalld > nftables > iptables
-- 如果没有防火墙，会自动安装 iptables
+- 如果没有防火墙，非 EL9 系统会尝试自动安装 iptables
+- 小规格 EL9 系统不会自动安装 iptables，避免触发 dnf 元数据处理导致机器卡顿
 
 **日志系统适配**
 
 - 自动检测是否使用 journald（新系统）或传统日志文件
 - 在 journald-only 系统上自动使用 `backend = systemd`
 - 兼容 rsyslog、syslog-ng 等传统日志服务
+- EL9 上如果没有传统日志文件，使用带 `journalmatch` 限制的 systemd backend，减少 journal 扫描范围
+- EL9 journald-only 系统需要已有 `python3-systemd`；脚本不会自动安装它，以避免小规格机器再次触发 dnf 卡顿
 
 **输入验证**
 
