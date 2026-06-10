@@ -330,13 +330,7 @@ ENABLE_EL_REPOS(){
         fi
     fi
 
-    if [[ "$OS" == "centos" ]] && ! rpm -q epel-next-release >/dev/null 2>&1; then
-        $pkg_manager -y install epel-next-release >/dev/null 2>&1 || true
-    fi
-
     if [[ "$pkg_manager" == "dnf" ]]; then
-        $pkg_manager -y install dnf-plugins-core >/dev/null 2>&1 || true
-
         if dnf config-manager --help >/dev/null 2>&1; then
             dnf config-manager --set-enabled crb >/dev/null 2>&1 \
                 || dnf config-manager --set-enabled powertools >/dev/null 2>&1 \
@@ -355,6 +349,70 @@ INSTALL_FAIL2BAN_PACKAGE_EL(){
     fi
 
     $pkg_manager -y install fail2ban-server fail2ban-systemd
+}
+
+INSTALL_PACKAGE(){
+    local package_name=$1
+
+    case "${release}" in
+        centos)
+            if command -v dnf &> /dev/null; then
+                dnf -y install "$package_name"
+            else
+                yum -y install "$package_name"
+            fi
+            ;;
+        debian|ubuntu)
+            apt-get -y install "$package_name"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+ENSURE_AUTH_LOG_FILE(){
+    local log_file=$1
+
+    [[ -f "$log_file" ]] && return 0
+
+    case "${release}" in
+        centos)
+            echo "正在启用 rsyslog 日志文件后端，避免 fail2ban 扫描完整 journal..."
+            if ! command -v rsyslogd &> /dev/null; then
+                INSTALL_PACKAGE rsyslog || return 1
+            fi
+
+            SERVICE_CONTROL rsyslog enable >/dev/null 2>&1 || true
+            SERVICE_CONTROL rsyslog restart >/dev/null 2>&1 \
+                || SERVICE_CONTROL rsyslog start >/dev/null 2>&1 \
+                || true
+
+            touch "$log_file" 2>/dev/null || true
+            chmod 600 "$log_file" 2>/dev/null || true
+            [[ -f "$log_file" ]]
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+CONFIGURE_FAIL2BAN_RESOURCE_LIMITS(){
+    CHECK_SERVICE_MANAGER
+
+    if [[ "$SERVICE_MANAGER" != "systemd" ]]; then
+        return 0
+    fi
+
+    mkdir -p /etc/systemd/system/fail2ban.service.d
+    cat > /etc/systemd/system/fail2ban.service.d/resource-limits.conf <<EOF
+[Service]
+Nice=10
+CPUAccounting=true
+CPUQuota=25%
+EOF
+    systemctl daemon-reload
 }
 
 GET_SETTING_FAIL2BAN_INFO(){
@@ -390,11 +448,7 @@ GET_SETTING_FAIL2BAN_INFO(){
 
 INSTALL_FAIL2BAN(){
     ASSERT_ROOT
-
-    if [[ -e /etc/fail2ban/jail.local ]]; then
-        echo "fail2ban已经安装了."
-        exit 0
-    fi
+    local fail2ban_already_installed=false
 
     CHECK_OS
 
@@ -403,7 +457,21 @@ INSTALL_FAIL2BAN(){
         exit 1
     fi
 
+    if command -v fail2ban-client &> /dev/null && \
+        command -v fail2ban-server &> /dev/null && \
+        FAIL2BAN_SERVICE_EXISTS; then
+        fail2ban_already_installed=true
+        echo "检测到 fail2ban 已安装，先停止旧服务以释放 CPU。"
+        SERVICE_CONTROL fail2ban stop >/dev/null 2>&1 || true
+    fi
+
     GET_SETTING_FAIL2BAN_INFO
+
+    if [[ "$fail2ban_already_installed" == true ]]; then
+        echo "检测到 fail2ban 已安装，将更新配置。"
+        CONFIGURE_FAIL2BAN_RESOURCE_LIMITS
+        return 0
+    fi
 
     case "${release}" in
         centos)
@@ -442,6 +510,7 @@ INSTALL_FAIL2BAN(){
     esac
 
     ASSERT_FAIL2BAN_INSTALLED || exit 1
+    CONFIGURE_FAIL2BAN_RESOURCE_LIMITS
 }
 
 REMOVE_FAIL2BAN(){
@@ -476,6 +545,7 @@ REMOVE_FAIL2BAN(){
 SETTING_FAIL2BAN(){
     CHECK_OS
     ASSERT_FAIL2BAN_INSTALLED || exit 1
+    SERVICE_CONTROL fail2ban stop >/dev/null 2>&1 || true
     GET_SSH_SERVICE_NAME
     DETECT_FIREWALL
 
@@ -483,6 +553,7 @@ SETTING_FAIL2BAN(){
     case "${release}" in
         centos)
             DEFAULT_LOG_FILE="/var/log/secure"
+            ENSURE_AUTH_LOG_FILE "$DEFAULT_LOG_FILE" || true
             ;;
         debian|ubuntu)
             DEFAULT_LOG_FILE="/var/log/auth.log"
@@ -501,11 +572,13 @@ SETTING_FAIL2BAN(){
         cat > /etc/fail2ban/jail.local <<EOF
 [DEFAULT]
 ignoreip = 127.0.0.1
+dbpurgeage = 1d
 
 [sshd]
 enabled = true
 filter = sshd
 backend = systemd
+journalmatch = _SYSTEMD_UNIT=${SSH_SERVICE}.service
 maxretry = ${BLOCKING_THRESHOLD}
 findtime = 3600
 bantime = ${BLOCKING_TIME_S}
@@ -516,10 +589,12 @@ EOF
         cat > /etc/fail2ban/jail.local <<EOF
 [DEFAULT]
 ignoreip = 127.0.0.1
+dbpurgeage = 1d
 
 [sshd]
 enabled = true
 filter = sshd
+backend = polling
 logpath = ${DEFAULT_LOG_FILE}
 maxretry = ${BLOCKING_THRESHOLD}
 findtime = 3600
@@ -528,14 +603,28 @@ action = ${FAIL2BAN_ACTION}
 EOF
     fi
 
-    SERVICE_CONTROL fail2ban restart
-    SERVICE_CONTROL fail2ban enable
+    CONFIGURE_FAIL2BAN_RESOURCE_LIMITS
+    SERVICE_CONTROL fail2ban restart || {
+        echo "错误: fail2ban 启动失败，请执行 journalctl -u fail2ban -n 80 --no-pager 查看原因。"
+        exit 1
+    }
+    SERVICE_CONTROL fail2ban enable || {
+        echo "错误: fail2ban 开机启动配置失败。"
+        exit 1
+    }
     # 使用 reload 而非 restart，避免中断当前 SSH 远程会话
     SERVICE_CONTROL $SSH_SERVICE reload 2>/dev/null || SERVICE_CONTROL $SSH_SERVICE restart
 
     echo "fail2ban配置完成."
     echo "使用的防火墙: $FIREWALL_TYPE"
     echo "使用的日志后端: $LOG_BACKEND"
+}
+
+EMERGENCY_STOP_FAIL2BAN(){
+    ASSERT_ROOT
+    SERVICE_CONTROL fail2ban stop >/dev/null 2>&1 || true
+    pkill -f fail2ban-server >/dev/null 2>&1 || true
+    echo "fail2ban 已停止。CPU 恢复后可重新执行: bash fail2ban.sh install"
 }
 
 VIEW_RUN_LOG(){
@@ -587,6 +676,9 @@ case "${1}" in
     install)
         INSTALL_FAIL2BAN
         SETTING_FAIL2BAN
+        ;;
+    emergency-stop|safe-stop)
+        EMERGENCY_STOP_FAIL2BAN
         ;;
     uninstall)
         REMOVE_FAIL2BAN
@@ -675,6 +767,7 @@ fail2ban-client -h"
         ;;
     *)
         echo "bash fail2ban.sh {install|uninstall|runlog|more}"
+        echo "bash fail2ban.sh {emergency-stop|safe-stop}"
         echo "bash fail2ban.sh {start|stop|restart|status}"
         echo "bash fail2ban.sh {blocklist|unlock}"
         ;;
