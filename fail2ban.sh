@@ -262,6 +262,101 @@ SERVICE_CONTROL(){
     esac
 }
 
+FAIL2BAN_SERVICE_EXISTS(){
+    CHECK_SERVICE_MANAGER
+
+    if [[ "$SERVICE_MANAGER" == "systemd" ]]; then
+        systemctl cat fail2ban >/dev/null 2>&1
+    else
+        [[ -x /etc/init.d/fail2ban ]]
+    fi
+}
+
+ASSERT_FAIL2BAN_INSTALLED(){
+    local ok=true
+
+    if ! command -v fail2ban-client &> /dev/null; then
+        echo "错误: 未找到 fail2ban-client，fail2ban 未正确安装。"
+        ok=false
+    fi
+
+    if ! command -v fail2ban-server &> /dev/null; then
+        echo "错误: 未找到 fail2ban-server，fail2ban 服务端组件未正确安装。"
+        ok=false
+    fi
+
+    if ! FAIL2BAN_SERVICE_EXISTS; then
+        echo "错误: 未找到 fail2ban.service，fail2ban 服务未正确安装。"
+        ok=false
+    fi
+
+    if [[ "$ok" != true ]]; then
+        echo "请检查软件源是否包含 EPEL/CRB，然后重新执行: bash fail2ban.sh install"
+        return 1
+    fi
+
+    mkdir -p /etc/fail2ban
+    return 0
+}
+
+GET_EL_MAJOR_VERSION(){
+    local major="${VER%%.*}"
+
+    if ! [[ "$major" =~ ^[0-9]+$ ]] && command -v rpm &> /dev/null; then
+        major="$(rpm -E '%{rhel}' 2>/dev/null)"
+    fi
+
+    echo "$major"
+}
+
+ENABLE_EL_REPOS(){
+    local pkg_manager=$1
+    local major
+
+    if [[ "$OS" == "fedora" ]]; then
+        return 0
+    fi
+
+    major="$(GET_EL_MAJOR_VERSION)"
+
+    echo "正在启用 EPEL 仓库..."
+    if ! rpm -q epel-release >/dev/null 2>&1; then
+        if ! $pkg_manager -y install epel-release; then
+            if [[ "$major" =~ ^[0-9]+$ ]]; then
+                $pkg_manager -y install "https://dl.fedoraproject.org/pub/epel/epel-release-latest-${major}.noarch.rpm" || return 1
+            else
+                return 1
+            fi
+        fi
+    fi
+
+    if [[ "$OS" == "centos" ]] && ! rpm -q epel-next-release >/dev/null 2>&1; then
+        $pkg_manager -y install epel-next-release >/dev/null 2>&1 || true
+    fi
+
+    if [[ "$pkg_manager" == "dnf" ]]; then
+        $pkg_manager -y install dnf-plugins-core >/dev/null 2>&1 || true
+
+        if dnf config-manager --help >/dev/null 2>&1; then
+            dnf config-manager --set-enabled crb >/dev/null 2>&1 \
+                || dnf config-manager --set-enabled powertools >/dev/null 2>&1 \
+                || true
+        fi
+    fi
+
+    return 0
+}
+
+INSTALL_FAIL2BAN_PACKAGE_EL(){
+    local pkg_manager=$1
+
+    if $pkg_manager -y install fail2ban; then
+        return 0
+    fi
+
+    $pkg_manager -y install fail2ban-server fail2ban-systemd
+}
+
 GET_SETTING_FAIL2BAN_INFO(){
     # 获取并验证失败次数
     while true; do
@@ -320,19 +415,33 @@ INSTALL_FAIL2BAN(){
             fi
 
             echo "正在安装fail2ban (使用 $PKG_MANAGER)..."
-            $PKG_MANAGER -y install epel-release
-            $PKG_MANAGER -y install fail2ban
+            ENABLE_EL_REPOS "$PKG_MANAGER" || {
+                echo "错误: EPEL 仓库启用失败，无法安装 fail2ban。"
+                exit 1
+            }
+            INSTALL_FAIL2BAN_PACKAGE_EL "$PKG_MANAGER" || {
+                echo "错误: fail2ban 安装失败。"
+                exit 1
+            }
             ;;
         debian|ubuntu)
             echo "正在安装fail2ban..."
-            apt-get update
-            apt-get -y install fail2ban
+            apt-get update || {
+                echo "错误: apt-get update 失败。"
+                exit 1
+            }
+            apt-get -y install fail2ban || {
+                echo "错误: fail2ban 安装失败。"
+                exit 1
+            }
             ;;
         *)
             echo "请使用CentOS/RHEL/Rocky/AlmaLinux/Debian/Ubuntu系统."
             exit 1
             ;;
     esac
+
+    ASSERT_FAIL2BAN_INSTALLED || exit 1
 }
 
 REMOVE_FAIL2BAN(){
@@ -366,6 +475,7 @@ REMOVE_FAIL2BAN(){
 
 SETTING_FAIL2BAN(){
     CHECK_OS
+    ASSERT_FAIL2BAN_INSTALLED || exit 1
     GET_SSH_SERVICE_NAME
     DETECT_FIREWALL
 
