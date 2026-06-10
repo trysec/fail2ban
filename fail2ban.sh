@@ -194,7 +194,7 @@ DETECT_FIREWALL(){
             fi
             ;;
         debian|ubuntu)
-            apt-get -y install iptables
+            RUN_APT_GET -y install iptables
             ;;
     esac
 
@@ -325,10 +325,13 @@ RUN_DNF(){
             "--disablerepo=PowerTools"
             "--disablerepo=*powertools*"
             "--disablerepo=*PowerTools*"
+            "--setopt=timeout=15"
+            "--setopt=minrate=1000"
+            "--setopt=max_parallel_downloads=1"
         )
     fi
 
-    dnf "${args[@]}" "$@"
+    RUN_LOW_PRIORITY dnf "${args[@]}" "$@"
 }
 
 RUN_YUM(){
@@ -340,10 +343,34 @@ RUN_YUM(){
             "--disablerepo=PowerTools"
             "--disablerepo=*powertools*"
             "--disablerepo=*PowerTools*"
+            "--setopt=timeout=15"
+            "--setopt=minrate=1000"
         )
     fi
 
-    yum "${args[@]}" "$@"
+    RUN_LOW_PRIORITY yum "${args[@]}" "$@"
+}
+
+RUN_APT_GET(){
+    RUN_LOW_PRIORITY apt-get "$@"
+}
+
+RUN_LOW_PRIORITY(){
+    local cmd=("$@")
+
+    if command -v ionice &> /dev/null; then
+        cmd=(ionice -c3 "${cmd[@]}")
+    fi
+
+    if command -v nice &> /dev/null; then
+        cmd=(nice -n 19 "${cmd[@]}")
+    fi
+
+    if command -v timeout &> /dev/null; then
+        timeout 900 "${cmd[@]}"
+    else
+        "${cmd[@]}"
+    fi
 }
 
 RUN_EL_PKG_MANAGER(){
@@ -362,11 +389,6 @@ DISABLE_INCOMPATIBLE_EL_REPOS(){
         return 0
     fi
 
-    if command -v dnf &> /dev/null && dnf config-manager --help >/dev/null 2>&1; then
-        dnf config-manager --set-disabled powertools >/dev/null 2>&1 || true
-        dnf config-manager --set-disabled PowerTools >/dev/null 2>&1 || true
-    fi
-
     if compgen -G "/etc/yum.repos.d/*.repo" >/dev/null 2>&1; then
         sed -i '/^\[PowerTools\]/,/^\[/{s/^enabled=.*/enabled=0/}' /etc/yum.repos.d/*.repo 2>/dev/null || true
         sed -i '/^\[powertools\]/,/^\[/{s/^enabled=.*/enabled=0/}' /etc/yum.repos.d/*.repo 2>/dev/null || true
@@ -378,12 +400,9 @@ ENABLE_CRB_REPO(){
         return 1
     fi
 
-    if command -v dnf &> /dev/null && dnf config-manager --help >/dev/null 2>&1; then
-        dnf config-manager --set-enabled crb >/dev/null 2>&1 && return 0
-    fi
-
     if compgen -G "/etc/yum.repos.d/*.repo" >/dev/null 2>&1; then
         sed -i '/^\[crb\]/,/^\[/{s/^enabled=.*/enabled=1/}' /etc/yum.repos.d/*.repo 2>/dev/null || true
+        sed -i '/^\[CRB\]/,/^\[/{s/^enabled=.*/enabled=1/}' /etc/yum.repos.d/*.repo 2>/dev/null || true
     fi
 
     return 0
@@ -423,15 +442,7 @@ ENABLE_EL_REPOS(){
     fi
 
     if [[ "$pkg_manager" == "dnf" ]]; then
-        if dnf config-manager --help >/dev/null 2>&1; then
-            if IS_EL9_OR_NEWER; then
-                ENABLE_CRB_REPO
-            else
-                dnf config-manager --set-enabled powertools >/dev/null 2>&1 \
-                    || dnf config-manager --set-enabled PowerTools >/dev/null 2>&1 \
-                    || true
-            fi
-        elif IS_EL9_OR_NEWER; then
+        if IS_EL9_OR_NEWER; then
             ENABLE_CRB_REPO
         fi
     fi
@@ -461,7 +472,7 @@ INSTALL_PACKAGE(){
             fi
             ;;
         debian|ubuntu)
-            apt-get -y install "$package_name"
+            RUN_APT_GET -y install "$package_name"
             ;;
         *)
             return 1
@@ -508,7 +519,7 @@ CONFIGURE_FAIL2BAN_RESOURCE_LIMITS(){
 [Service]
 Nice=10
 CPUAccounting=true
-CPUQuota=25%
+CPUQuota=10%
 EOF
     systemctl daemon-reload
 }
@@ -592,11 +603,11 @@ INSTALL_FAIL2BAN(){
             ;;
         debian|ubuntu)
             echo "正在安装fail2ban..."
-            apt-get update || {
+            RUN_APT_GET update || {
                 echo "错误: apt-get update 失败。"
                 exit 1
             }
-            apt-get -y install fail2ban || {
+            RUN_APT_GET -y install fail2ban || {
                 echo "错误: fail2ban 安装失败。"
                 exit 1
             }
@@ -631,8 +642,8 @@ REMOVE_FAIL2BAN(){
             fi
             ;;
         debian|ubuntu)
-            apt-get -y remove --purge fail2ban
-            apt-get -y autoremove
+            RUN_APT_GET -y remove --purge fail2ban
+            RUN_APT_GET -y autoremove
             ;;
     esac
 
@@ -702,27 +713,80 @@ EOF
     fi
 
     CONFIGURE_FAIL2BAN_RESOURCE_LIMITS
-    SERVICE_CONTROL fail2ban restart || {
+    SERVICE_CONTROL fail2ban stop >/dev/null 2>&1 || true
+
+    echo "fail2ban配置完成，服务未启动，开机自启未启用。"
+    echo "如需启动，请执行: bash fail2ban.sh start"
+    echo "使用的防火墙: $FIREWALL_TYPE"
+    echo "使用的日志后端: $LOG_BACKEND"
+}
+
+START_FAIL2BAN(){
+    ASSERT_ROOT
+    CHECK_OS
+    ASSERT_FAIL2BAN_INSTALLED || exit 1
+    CONFIGURE_FAIL2BAN_RESOURCE_LIMITS
+
+    SERVICE_CONTROL fail2ban start || {
         echo "错误: fail2ban 启动失败，请执行 journalctl -u fail2ban -n 80 --no-pager 查看原因。"
         exit 1
     }
+
+    echo "fail2ban已启动。"
+}
+
+RESTART_FAIL2BAN(){
+    ASSERT_ROOT
+    CHECK_OS
+    ASSERT_FAIL2BAN_INSTALLED || exit 1
+    CONFIGURE_FAIL2BAN_RESOURCE_LIMITS
+
+    SERVICE_CONTROL fail2ban restart || {
+        echo "错误: fail2ban 重启失败，请执行 journalctl -u fail2ban -n 80 --no-pager 查看原因。"
+        exit 1
+    }
+
+    echo "fail2ban已重启。"
+}
+
+ENABLE_FAIL2BAN(){
+    ASSERT_ROOT
+    CHECK_OS
+    ASSERT_FAIL2BAN_INSTALLED || exit 1
+    CONFIGURE_FAIL2BAN_RESOURCE_LIMITS
+
     SERVICE_CONTROL fail2ban enable || {
         echo "错误: fail2ban 开机启动配置失败。"
         exit 1
     }
-    # 使用 reload 而非 restart，避免中断当前 SSH 远程会话
-    SERVICE_CONTROL $SSH_SERVICE reload 2>/dev/null || SERVICE_CONTROL $SSH_SERVICE restart
 
-    echo "fail2ban配置完成."
-    echo "使用的防火墙: $FIREWALL_TYPE"
-    echo "使用的日志后端: $LOG_BACKEND"
+    echo "fail2ban 开机启动已启用。"
 }
 
 EMERGENCY_STOP_FAIL2BAN(){
     ASSERT_ROOT
     SERVICE_CONTROL fail2ban stop >/dev/null 2>&1 || true
     pkill -f fail2ban-server >/dev/null 2>&1 || true
+    pkill -9 -f fail2ban-server >/dev/null 2>&1 || true
+    pkill -9 -f dnf >/dev/null 2>&1 || true
+    pkill -9 -f yum >/dev/null 2>&1 || true
+    pkill -9 -f rpm >/dev/null 2>&1 || true
     echo "fail2ban 已停止。CPU 恢复后可重新执行: bash fail2ban.sh install"
+}
+
+DIAGNOSE_LOAD(){
+    echo "【CPU Top】"
+    ps -eo pid,ppid,stat,pcpu,pmem,comm,args --sort=-pcpu | sed -n '1,12p'
+    echo
+    echo "【fail2ban service】"
+    SERVICE_CONTROL fail2ban status 2>/dev/null || echo "fail2ban service 不可用或未安装"
+    echo
+    echo "【dnf/yum/rpm】"
+    {
+        pgrep -a -f dnf
+        pgrep -a -f yum
+        pgrep -a -f rpm
+    } || echo "未发现 dnf/yum/rpm 进程"
 }
 
 VIEW_RUN_LOG(){
@@ -777,6 +841,9 @@ case "${1}" in
         ;;
     emergency-stop|safe-stop)
         EMERGENCY_STOP_FAIL2BAN
+        ;;
+    diagnose|diag)
+        DIAGNOSE_LOAD
         ;;
     uninstall)
         REMOVE_FAIL2BAN
@@ -855,18 +922,21 @@ fail2ban-client -h"
         VIEW_RUN_LOG
         ;;
     start)
-        SERVICE_CONTROL fail2ban start
+        START_FAIL2BAN
         ;;
     stop)
-        SERVICE_CONTROL fail2ban stop
+        EMERGENCY_STOP_FAIL2BAN
         ;;
     restart)
-        SERVICE_CONTROL fail2ban restart
+        RESTART_FAIL2BAN
+        ;;
+    enable)
+        ENABLE_FAIL2BAN
         ;;
     *)
         echo "bash fail2ban.sh {install|uninstall|runlog|more}"
-        echo "bash fail2ban.sh {emergency-stop|safe-stop}"
-        echo "bash fail2ban.sh {start|stop|restart|status}"
+        echo "bash fail2ban.sh {emergency-stop|safe-stop|diagnose}"
+        echo "bash fail2ban.sh {start|stop|restart|enable|status}"
         echo "bash fail2ban.sh {blocklist|unlock}"
         ;;
 esac
