@@ -1,5 +1,7 @@
 #!/bin/bash
 
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH}"
+
 ASSERT_ROOT(){
     if [[ $EUID -ne 0 ]]; then
         echo "错误: 此操作需要 root 权限，请使用 sudo 运行。"
@@ -26,6 +28,8 @@ CHECK_WINDOWS_SHELL(){
 CHECK_WINDOWS_SHELL
 
 JAIL_NAME="sshd"
+FAIL2BAN_SOURCE_VERSION="1.1.0"
+FAIL2BAN_SOURCE_URL="https://github.com/fail2ban/fail2ban/archive/refs/tags/${FAIL2BAN_SOURCE_VERSION}.tar.gz"
 
 # 检测操作系统
 CHECK_OS(){
@@ -182,6 +186,11 @@ DETECT_FIREWALL(){
 
     # 没有任何可用的防火墙工具，尝试安装 iptables
     echo "警告: 未检测到可用的防火墙工具 (firewalld/nftables/iptables)"
+    if IS_EL9_OR_NEWER; then
+        echo "错误: EL9 小规格主机上不自动安装 iptables，避免 dnf 卡住。请先安装 firewalld/nftables/iptables 后重试。"
+        exit 1
+    fi
+
     echo "正在尝试安装 iptables..."
 
     CHECK_OS
@@ -272,6 +281,84 @@ FAIL2BAN_SERVICE_EXISTS(){
     fi
 }
 
+INSTALL_FAIL2BAN_FROM_SOURCE(){
+    local work_dir="/tmp/fail2ban-install.$$"
+    local archive_path="${work_dir}/fail2ban.tar.gz"
+    local source_dir="${work_dir}/fail2ban-${FAIL2BAN_SOURCE_VERSION}"
+    local fail2ban_server_bin=""
+    local fail2ban_client_bin=""
+
+    echo "正在通过源码包安装 fail2ban ${FAIL2BAN_SOURCE_VERSION}，跳过 EPEL 元数据..."
+    mkdir -p "$work_dir" || return 1
+
+    if command -v curl &> /dev/null; then
+        RUN_LOW_PRIORITY curl -L --fail --connect-timeout 15 --max-time 180 -o "$archive_path" "$FAIL2BAN_SOURCE_URL" || {
+            rm -rf "$work_dir"
+            return 1
+        }
+    elif command -v wget &> /dev/null; then
+        RUN_LOW_PRIORITY wget -T 15 -O "$archive_path" "$FAIL2BAN_SOURCE_URL" || {
+            rm -rf "$work_dir"
+            return 1
+        }
+    else
+        echo "错误: 未找到 curl 或 wget，无法下载 fail2ban 源码包。"
+        rm -rf "$work_dir"
+        return 1
+    fi
+
+    tar -xzf "$archive_path" -C "$work_dir" || {
+        rm -rf "$work_dir"
+        return 1
+    }
+
+    if command -v python3 &> /dev/null; then
+        RUN_LOW_PRIORITY python3 "$source_dir/setup.py" install --without-tests || {
+            rm -rf "$work_dir"
+            return 1
+        }
+    else
+        echo "错误: 未找到 python3，无法安装 fail2ban。"
+        rm -rf "$work_dir"
+        return 1
+    fi
+
+    mkdir -p /etc/fail2ban /run/fail2ban /var/lib/fail2ban
+
+    fail2ban_server_bin="$(command -v fail2ban-server 2>/dev/null || true)"
+    fail2ban_client_bin="$(command -v fail2ban-client 2>/dev/null || true)"
+
+    if [[ -z "$fail2ban_server_bin" || -z "$fail2ban_client_bin" ]]; then
+        echo "错误: fail2ban 源码安装后未找到 fail2ban-server 或 fail2ban-client。"
+        rm -rf "$work_dir"
+        return 1
+    fi
+
+    cat > /etc/systemd/system/fail2ban.service <<EOF
+[Unit]
+Description=Fail2Ban Service
+Documentation=man:fail2ban(1)
+After=network.target iptables.service firewalld.service
+PartOf=firewalld.service
+
+[Service]
+Type=simple
+ExecStart=${fail2ban_server_bin} -xf start
+ExecReload=${fail2ban_client_bin} reload
+ExecStop=${fail2ban_client_bin} stop
+PIDFile=/run/fail2ban/fail2ban.pid
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload 2>/dev/null || true
+
+    rm -rf "$work_dir"
+    return 0
+}
+
 ASSERT_FAIL2BAN_INSTALLED(){
     local ok=true
 
@@ -325,6 +412,9 @@ RUN_DNF(){
             "--disablerepo=PowerTools"
             "--disablerepo=*powertools*"
             "--disablerepo=*PowerTools*"
+            "--disablerepo=epel"
+            "--disablerepo=epel-next"
+            "--disablerepo=*epel*"
             "--setopt=timeout=15"
             "--setopt=minrate=1000"
             "--setopt=max_parallel_downloads=1"
@@ -343,6 +433,9 @@ RUN_YUM(){
             "--disablerepo=PowerTools"
             "--disablerepo=*powertools*"
             "--disablerepo=*PowerTools*"
+            "--disablerepo=epel"
+            "--disablerepo=epel-next"
+            "--disablerepo=*epel*"
             "--setopt=timeout=15"
             "--setopt=minrate=1000"
         )
@@ -453,6 +546,27 @@ ENABLE_EL_REPOS(){
 INSTALL_FAIL2BAN_PACKAGE_EL(){
     local pkg_manager=$1
 
+    if IS_EL9_OR_NEWER; then
+        if ! command -v python3 &> /dev/null; then
+            RUN_EL_PKG_MANAGER "$pkg_manager" -y install python3 || return 1
+        fi
+
+        if ! command -v tar &> /dev/null; then
+            RUN_EL_PKG_MANAGER "$pkg_manager" -y install tar || return 1
+        fi
+
+        if ! command -v gzip &> /dev/null; then
+            RUN_EL_PKG_MANAGER "$pkg_manager" -y install gzip || return 1
+        fi
+
+        if ! command -v curl &> /dev/null && ! command -v wget &> /dev/null; then
+            RUN_EL_PKG_MANAGER "$pkg_manager" -y install curl || return 1
+        fi
+
+        INSTALL_FAIL2BAN_FROM_SOURCE
+        return $?
+    fi
+
     if RUN_EL_PKG_MANAGER "$pkg_manager" -y install fail2ban; then
         return 0
     fi
@@ -488,6 +602,10 @@ ENSURE_AUTH_LOG_FILE(){
     case "${release}" in
         centos)
             echo "正在启用 rsyslog 日志文件后端，避免 fail2ban 扫描完整 journal..."
+            if IS_EL9_OR_NEWER; then
+                return 1
+            fi
+
             if ! command -v rsyslogd &> /dev/null; then
                 INSTALL_PACKAGE rsyslog || return 1
             fi
@@ -592,10 +710,14 @@ INSTALL_FAIL2BAN(){
             fi
 
             echo "正在安装fail2ban (使用 $PKG_MANAGER)..."
-            ENABLE_EL_REPOS "$PKG_MANAGER" || {
-                echo "错误: EPEL 仓库启用失败，无法安装 fail2ban。"
-                exit 1
-            }
+            if ! IS_EL9_OR_NEWER; then
+                ENABLE_EL_REPOS "$PKG_MANAGER" || {
+                    echo "错误: EPEL 仓库启用失败，无法安装 fail2ban。"
+                    exit 1
+                }
+            else
+                DISABLE_INCOMPATIBLE_EL_REPOS
+            fi
             INSTALL_FAIL2BAN_PACKAGE_EL "$PKG_MANAGER" || {
                 echo "错误: fail2ban 安装失败。"
                 exit 1
