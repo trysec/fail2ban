@@ -188,9 +188,9 @@ DETECT_FIREWALL(){
     case "${release}" in
         centos)
             if command -v dnf &> /dev/null; then
-                dnf -y install iptables iptables-services
+                RUN_DNF -y install iptables iptables-services
             else
-                yum -y install iptables iptables-services
+                RUN_YUM -y install iptables iptables-services
             fi
             ;;
         debian|ubuntu)
@@ -309,6 +309,96 @@ GET_EL_MAJOR_VERSION(){
     echo "$major"
 }
 
+IS_EL9_OR_NEWER(){
+    local major
+
+    major="$(GET_EL_MAJOR_VERSION)"
+    [[ "$major" =~ ^[0-9]+$ ]] && (( major >= 9 ))
+}
+
+RUN_DNF(){
+    local args=()
+
+    if IS_EL9_OR_NEWER; then
+        args+=(
+            "--disablerepo=powertools"
+            "--disablerepo=PowerTools"
+            "--disablerepo=*powertools*"
+            "--disablerepo=*PowerTools*"
+        )
+    fi
+
+    dnf "${args[@]}" "$@"
+}
+
+RUN_YUM(){
+    local args=()
+
+    if IS_EL9_OR_NEWER; then
+        args+=(
+            "--disablerepo=powertools"
+            "--disablerepo=PowerTools"
+            "--disablerepo=*powertools*"
+            "--disablerepo=*PowerTools*"
+        )
+    fi
+
+    yum "${args[@]}" "$@"
+}
+
+RUN_EL_PKG_MANAGER(){
+    local pkg_manager=$1
+    shift
+
+    if [[ "$pkg_manager" == "dnf" ]]; then
+        RUN_DNF "$@"
+    else
+        RUN_YUM "$@"
+    fi
+}
+
+DISABLE_INCOMPATIBLE_EL_REPOS(){
+    if ! IS_EL9_OR_NEWER; then
+        return 0
+    fi
+
+    if command -v dnf &> /dev/null && dnf config-manager --help >/dev/null 2>&1; then
+        dnf config-manager --set-disabled powertools >/dev/null 2>&1 || true
+        dnf config-manager --set-disabled PowerTools >/dev/null 2>&1 || true
+    fi
+
+    if compgen -G "/etc/yum.repos.d/*.repo" >/dev/null 2>&1; then
+        sed -i '/^\[PowerTools\]/,/^\[/{s/^enabled=.*/enabled=0/}' /etc/yum.repos.d/*.repo 2>/dev/null || true
+        sed -i '/^\[powertools\]/,/^\[/{s/^enabled=.*/enabled=0/}' /etc/yum.repos.d/*.repo 2>/dev/null || true
+    fi
+}
+
+ENABLE_CRB_REPO(){
+    if ! IS_EL9_OR_NEWER; then
+        return 1
+    fi
+
+    if command -v dnf &> /dev/null && dnf config-manager --help >/dev/null 2>&1; then
+        dnf config-manager --set-enabled crb >/dev/null 2>&1 && return 0
+    fi
+
+    if compgen -G "/etc/yum.repos.d/*.repo" >/dev/null 2>&1; then
+        sed -i '/^\[crb\]/,/^\[/{s/^enabled=.*/enabled=1/}' /etc/yum.repos.d/*.repo 2>/dev/null || true
+    fi
+
+    return 0
+}
+
+CLEAN_EL_METADATA(){
+    local pkg_manager=$1
+
+    if [[ "$pkg_manager" == "dnf" ]]; then
+        RUN_DNF clean metadata >/dev/null 2>&1 || true
+    else
+        RUN_YUM clean metadata >/dev/null 2>&1 || true
+    fi
+}
+
 ENABLE_EL_REPOS(){
     local pkg_manager=$1
     local major
@@ -318,12 +408,14 @@ ENABLE_EL_REPOS(){
     fi
 
     major="$(GET_EL_MAJOR_VERSION)"
+    DISABLE_INCOMPATIBLE_EL_REPOS
+    CLEAN_EL_METADATA "$pkg_manager"
 
     echo "正在启用 EPEL 仓库..."
     if ! rpm -q epel-release >/dev/null 2>&1; then
-        if ! $pkg_manager -y install epel-release; then
+        if ! RUN_EL_PKG_MANAGER "$pkg_manager" -y install epel-release; then
             if [[ "$major" =~ ^[0-9]+$ ]]; then
-                $pkg_manager -y install "https://dl.fedoraproject.org/pub/epel/epel-release-latest-${major}.noarch.rpm" || return 1
+                RUN_EL_PKG_MANAGER "$pkg_manager" -y install "https://dl.fedoraproject.org/pub/epel/epel-release-latest-${major}.noarch.rpm" || return 1
             else
                 return 1
             fi
@@ -332,9 +424,15 @@ ENABLE_EL_REPOS(){
 
     if [[ "$pkg_manager" == "dnf" ]]; then
         if dnf config-manager --help >/dev/null 2>&1; then
-            dnf config-manager --set-enabled crb >/dev/null 2>&1 \
-                || dnf config-manager --set-enabled powertools >/dev/null 2>&1 \
-                || true
+            if IS_EL9_OR_NEWER; then
+                ENABLE_CRB_REPO
+            else
+                dnf config-manager --set-enabled powertools >/dev/null 2>&1 \
+                    || dnf config-manager --set-enabled PowerTools >/dev/null 2>&1 \
+                    || true
+            fi
+        elif IS_EL9_OR_NEWER; then
+            ENABLE_CRB_REPO
         fi
     fi
 
@@ -344,11 +442,11 @@ ENABLE_EL_REPOS(){
 INSTALL_FAIL2BAN_PACKAGE_EL(){
     local pkg_manager=$1
 
-    if $pkg_manager -y install fail2ban; then
+    if RUN_EL_PKG_MANAGER "$pkg_manager" -y install fail2ban; then
         return 0
     fi
 
-    $pkg_manager -y install fail2ban-server fail2ban-systemd
+    RUN_EL_PKG_MANAGER "$pkg_manager" -y install fail2ban-server fail2ban-systemd
 }
 
 INSTALL_PACKAGE(){
@@ -357,9 +455,9 @@ INSTALL_PACKAGE(){
     case "${release}" in
         centos)
             if command -v dnf &> /dev/null; then
-                dnf -y install "$package_name"
+                RUN_DNF -y install "$package_name"
             else
-                yum -y install "$package_name"
+                RUN_YUM -y install "$package_name"
             fi
             ;;
         debian|ubuntu)
@@ -527,9 +625,9 @@ REMOVE_FAIL2BAN(){
     case "${release}" in
         centos)
             if command -v dnf &> /dev/null; then
-                dnf -y remove fail2ban
+                RUN_DNF -y remove fail2ban
             else
-                yum -y remove fail2ban
+                RUN_YUM -y remove fail2ban
             fi
             ;;
         debian|ubuntu)
