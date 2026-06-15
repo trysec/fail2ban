@@ -191,6 +191,12 @@ DETECT_FIREWALL(){
         exit 1
     fi
 
+    if [[ "${release}" == "debian" || "${release}" == "ubuntu" ]]; then
+        echo "错误: Debian/Ubuntu 小规格主机上不自动安装 iptables，避免 apt/dpkg/man-db 卡住。"
+        echo "      请先安装或启用 firewalld/nftables/iptables 后重试。"
+        exit 1
+    fi
+
     echo "正在尝试安装 iptables..."
 
     CHECK_OS
@@ -247,7 +253,7 @@ ENSURE_SYSTEMD_BACKEND_SUPPORT(){
         return 0
     fi
 
-    echo "检测到 systemd journal 后端需要 python3-systemd，正在安装..."
+    echo "检测到 systemd journal 后端需要 python3-systemd。"
     case "${release}" in
         centos)
             if IS_EL9_OR_NEWER; then
@@ -256,6 +262,7 @@ ENSURE_SYSTEMD_BACKEND_SUPPORT(){
                 return 1
             fi
 
+            echo "正在安装 python3-systemd..."
             if command -v dnf &> /dev/null; then
                 RUN_DNF -y install python3-systemd
             else
@@ -263,7 +270,9 @@ ENSURE_SYSTEMD_BACKEND_SUPPORT(){
             fi
             ;;
         debian|ubuntu)
-            RUN_APT_GET -y install python3-systemd
+            echo "错误: Debian/Ubuntu 上缺少 python3-systemd，脚本不会自动调用 apt 安装以避免 apt/dpkg/man-db 卡住。"
+            echo "      可先安装 rsyslog 生成 /var/log/auth.log，或手动安装 python3-systemd 后重试。"
+            return 1
             ;;
         *)
             return 1
@@ -302,6 +311,20 @@ SERVICE_CONTROL(){
     esac
 }
 
+DISABLE_FAIL2BAN_AUTO_START(){
+    CHECK_SERVICE_MANAGER
+
+    if [[ "$SERVICE_MANAGER" == "systemd" ]]; then
+        systemctl disable fail2ban >/dev/null 2>&1 || true
+    else
+        if command -v chkconfig &> /dev/null; then
+            chkconfig fail2ban off >/dev/null 2>&1 || true
+        elif command -v update-rc.d &> /dev/null; then
+            update-rc.d fail2ban disable >/dev/null 2>&1 || true
+        fi
+    fi
+}
+
 FAIL2BAN_SERVICE_EXISTS(){
     CHECK_SERVICE_MANAGER
 
@@ -316,11 +339,18 @@ INSTALL_FAIL2BAN_FROM_SOURCE(){
     local work_dir="/tmp/fail2ban-install.$$"
     local archive_path="${work_dir}/fail2ban.tar.gz"
     local source_dir="${work_dir}/fail2ban-${FAIL2BAN_SOURCE_VERSION}"
+    local install_base="/usr/local/lib/fail2ban"
     local install_record="/etc/fail2ban/source-install-files.txt"
     local fail2ban_server_bin=""
     local fail2ban_client_bin=""
 
-    echo "正在通过源码包安装 fail2ban ${FAIL2BAN_SOURCE_VERSION}，跳过 EPEL 元数据..."
+    CHECK_SERVICE_MANAGER
+    if [[ "$SERVICE_MANAGER" != "systemd" ]]; then
+        echo "错误: 源码安装需要 systemd 服务管理器。"
+        return 1
+    fi
+
+    echo "正在通过源码包安装 fail2ban ${FAIL2BAN_SOURCE_VERSION}，跳过发行版包管理器元数据和触发器..."
     mkdir -p "$work_dir" || return 1
 
     if command -v curl &> /dev/null; then
@@ -344,20 +374,71 @@ INSTALL_FAIL2BAN_FROM_SOURCE(){
         return 1
     }
 
-    mkdir -p /etc/fail2ban /run/fail2ban /var/lib/fail2ban
+    if [[ ! -f "${source_dir}/setup.py" || \
+        ! -f "${source_dir}/fail2ban/__init__.py" || \
+        ! -x "${source_dir}/bin/fail2ban-server" ]]; then
+        echo "错误: fail2ban 源码包解压后目录结构异常，取消安装。"
+        rm -rf "$work_dir"
+        return 1
+    fi
 
-    if command -v python3 &> /dev/null; then
-        (
-            cd "$source_dir" && RUN_LOW_PRIORITY python3 setup.py install --without-tests --record "$install_record"
-        ) || {
-            rm -rf "$work_dir"
-            return 1
-        }
-    else
+    if ! command -v python3 &> /dev/null; then
         echo "错误: 未找到 python3，无法安装 fail2ban。"
         rm -rf "$work_dir"
         return 1
     fi
+
+    mkdir -p /etc/fail2ban /run/fail2ban /var/lib/fail2ban /usr/local/bin
+    rm -rf "$install_base"
+    mkdir -p "$install_base" || {
+        rm -rf "$work_dir"
+        return 1
+    }
+
+    cp -R "${source_dir}/fail2ban" "$install_base/" || {
+        rm -rf "$work_dir" "$install_base"
+        return 1
+    }
+    cp -R "${source_dir}/bin" "$install_base/" || {
+        rm -rf "$work_dir" "$install_base"
+        return 1
+    }
+    cp -R "${source_dir}/config/." /etc/fail2ban/ || {
+        rm -rf "$work_dir" "$install_base"
+        return 1
+    }
+    chmod +x "${install_base}/bin/fail2ban-client" \
+        "${install_base}/bin/fail2ban-server" \
+        "${install_base}/bin/fail2ban-regex" 2>/dev/null || true
+
+    PYTHONPATH="$install_base" python3 - <<'PY' >/dev/null 2>&1 || {
+import fail2ban.client.fail2banclient
+import fail2ban.client.fail2banserver
+PY
+        echo "错误: fail2ban Python 模块验证失败。"
+        rm -rf "$work_dir" "$install_base"
+        return 1
+    }
+
+    cat > /usr/local/bin/fail2ban-client <<EOF
+#!/bin/sh
+export PYTHONPATH="${install_base}\${PYTHONPATH:+:\$PYTHONPATH}"
+exec /usr/bin/env python3 "${install_base}/bin/fail2ban-client" "\$@"
+EOF
+    cat > /usr/local/bin/fail2ban-server <<EOF
+#!/bin/sh
+export PYTHONPATH="${install_base}\${PYTHONPATH:+:\$PYTHONPATH}"
+exec /usr/bin/env python3 "${install_base}/bin/fail2ban-server" "\$@"
+EOF
+    cat > /usr/local/bin/fail2ban-regex <<EOF
+#!/bin/sh
+export PYTHONPATH="${install_base}\${PYTHONPATH:+:\$PYTHONPATH}"
+exec /usr/bin/env python3 "${install_base}/bin/fail2ban-regex" "\$@"
+EOF
+    chmod +x /usr/local/bin/fail2ban-client \
+        /usr/local/bin/fail2ban-server \
+        /usr/local/bin/fail2ban-regex
+    ln -sf "$(command -v python3)" /usr/local/bin/fail2ban-python
 
     fail2ban_server_bin="$(command -v fail2ban-server 2>/dev/null || true)"
     fail2ban_client_bin="$(command -v fail2ban-client 2>/dev/null || true)"
@@ -368,6 +449,19 @@ INSTALL_FAIL2BAN_FROM_SOURCE(){
         return 1
     fi
 
+    {
+        printf '%s\n' \
+            "/usr/local/bin/fail2ban-client" \
+            "/usr/local/bin/fail2ban-server" \
+            "/usr/local/bin/fail2ban-regex" \
+            "/usr/local/bin/fail2ban-python"
+        find "$install_base" -type f -print 2>/dev/null
+        find /etc/fail2ban -type f \
+            ! -name 'jail.local' \
+            ! -name 'install-method' \
+            ! -name 'source-install-files.txt' \
+            -print 2>/dev/null
+    } > "$install_record"
     echo "source" > /etc/fail2ban/install-method
 
     cat > /etc/systemd/system/fail2ban.service <<EOF
@@ -489,7 +583,12 @@ RUN_YUM(){
 }
 
 RUN_APT_GET(){
-    RUN_LOW_PRIORITY apt-get "$@"
+    RUN_LOW_PRIORITY env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a \
+        apt-get \
+        -o Acquire::http::Timeout=15 \
+        -o Acquire::https::Timeout=15 \
+        -o Acquire::Retries=1 \
+        "$@"
 }
 
 RUN_LOW_PRIORITY(){
@@ -591,22 +690,7 @@ INSTALL_FAIL2BAN_PACKAGE_EL(){
     local pkg_manager=$1
 
     if IS_EL9_OR_NEWER; then
-        if ! command -v python3 &> /dev/null; then
-            RUN_EL_PKG_MANAGER "$pkg_manager" -y install python3 || return 1
-        fi
-
-        if ! command -v tar &> /dev/null; then
-            RUN_EL_PKG_MANAGER "$pkg_manager" -y install tar || return 1
-        fi
-
-        if ! command -v gzip &> /dev/null; then
-            RUN_EL_PKG_MANAGER "$pkg_manager" -y install gzip || return 1
-        fi
-
-        if ! command -v curl &> /dev/null && ! command -v wget &> /dev/null; then
-            RUN_EL_PKG_MANAGER "$pkg_manager" -y install curl || return 1
-        fi
-
+        CHECK_SOURCE_INSTALL_PREREQS || return 1
         INSTALL_FAIL2BAN_FROM_SOURCE
         return $?
     fi
@@ -616,6 +700,47 @@ INSTALL_FAIL2BAN_PACKAGE_EL(){
     fi
 
     RUN_EL_PKG_MANAGER "$pkg_manager" -y install fail2ban-server fail2ban-systemd
+}
+
+CHECK_SOURCE_INSTALL_PREREQS(){
+    local missing=()
+
+    command -v python3 &> /dev/null || missing+=("python3")
+
+    command -v tar &> /dev/null || missing+=("tar")
+    command -v gzip &> /dev/null || missing+=("gzip")
+
+    if ! command -v curl &> /dev/null && ! command -v wget &> /dev/null; then
+        missing+=("curl或wget")
+    fi
+
+    if (( ${#missing[@]} == 0 )); then
+        return 0
+    fi
+
+    echo "错误: 源码安装缺少依赖: ${missing[*]}"
+    case "${release}" in
+        centos)
+            echo "      为避免小规格 EL9 主机再次触发 dnf/yum 卡顿，脚本不会自动安装这些依赖。"
+            ;;
+        debian|ubuntu)
+            echo "      为避免小规格 Debian/Ubuntu 主机再次触发 apt/dpkg/man-db 卡顿，脚本不会自动安装这些依赖。"
+            ;;
+    esac
+    echo "      请先手动安装缺失依赖后重试: bash fail2ban.sh install"
+    return 1
+}
+
+INSTALL_FAIL2BAN_PACKAGE_DEB(){
+    CHECK_SERVICE_MANAGER
+
+    if [[ "$SERVICE_MANAGER" != "systemd" ]]; then
+        echo "错误: Debian/Ubuntu 源码安装需要 systemd，脚本不会自动回退 apt 安装以避免卡住。"
+        return 1
+    fi
+
+    CHECK_SOURCE_INSTALL_PREREQS || return 1
+    INSTALL_FAIL2BAN_FROM_SOURCE
 }
 
 INSTALL_PACKAGE(){
@@ -768,12 +893,8 @@ INSTALL_FAIL2BAN(){
             }
             ;;
         debian|ubuntu)
-            echo "正在安装fail2ban..."
-            RUN_APT_GET update || {
-                echo "错误: apt-get update 失败。"
-                exit 1
-            }
-            RUN_APT_GET -y install fail2ban || {
+            echo "正在安装fail2ban (源码包方式，跳过 apt 包触发器)..."
+            INSTALL_FAIL2BAN_PACKAGE_DEB || {
                 echo "错误: fail2ban 安装失败。"
                 exit 1
             }
@@ -809,6 +930,7 @@ REMOVE_FAIL2BAN(){
                 [[ -n "$installed_file" && -e "$installed_file" ]] && rm -f "$installed_file"
             done < /etc/fail2ban/source-install-files.txt
         fi
+        rm -rf /usr/local/lib/fail2ban
     else
         case "${release}" in
             centos)
@@ -902,6 +1024,7 @@ EOF
 
     CONFIGURE_FAIL2BAN_RESOURCE_LIMITS
     SERVICE_CONTROL fail2ban stop >/dev/null 2>&1 || true
+    DISABLE_FAIL2BAN_AUTO_START
 
     echo "fail2ban配置完成，服务未启动，开机自启未启用。"
     echo "如需启动，请执行: bash fail2ban.sh start"
@@ -965,6 +1088,11 @@ EMERGENCY_STOP_FAIL2BAN(){
     pkill -9 -f dnf >/dev/null 2>&1 || true
     pkill -9 -f yum >/dev/null 2>&1 || true
     pkill -9 -f rpm >/dev/null 2>&1 || true
+    pkill -9 -x apt >/dev/null 2>&1 || true
+    pkill -9 -x apt-get >/dev/null 2>&1 || true
+    pkill -9 -x dpkg >/dev/null 2>&1 || true
+    pkill -9 -x dpkg-deb >/dev/null 2>&1 || true
+    pkill -9 -x mandb >/dev/null 2>&1 || true
     echo "fail2ban 和包管理器进程已停止。CPU 恢复后可重新执行: bash fail2ban.sh install"
 }
 
@@ -975,12 +1103,17 @@ DIAGNOSE_LOAD(){
     echo "【fail2ban service】"
     SERVICE_CONTROL fail2ban status 2>/dev/null || echo "fail2ban service 不可用或未安装"
     echo
-    echo "【dnf/yum/rpm】"
+    echo "【包管理器进程】"
     local found_pkg_process=false
     pgrep -a -f dnf && found_pkg_process=true
     pgrep -a -f yum && found_pkg_process=true
     pgrep -a -f rpm && found_pkg_process=true
-    [[ "$found_pkg_process" == true ]] || echo "未发现 dnf/yum/rpm 进程"
+    pgrep -a -x apt && found_pkg_process=true
+    pgrep -a -x apt-get && found_pkg_process=true
+    pgrep -a -x dpkg && found_pkg_process=true
+    pgrep -a -x dpkg-deb && found_pkg_process=true
+    pgrep -a -x mandb && found_pkg_process=true
+    [[ "$found_pkg_process" == true ]] || echo "未发现 dnf/yum/rpm/apt/dpkg/man-db 进程"
 }
 
 VIEW_RUN_LOG(){

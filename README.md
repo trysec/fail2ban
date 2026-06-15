@@ -17,8 +17,8 @@ fail2ban 一键安装 / 卸载脚本。
 - ✅ **防火墙自动适配**: firewalld / nftables / iptables
 - ✅ **日志系统自动检测**: journald / rsyslog / syslog-ng
 - ✅ **服务管理器自动适配**: systemd / sysvinit
-- ✅ **包管理器自动选择**: dnf / yum / apt-get
-- ✅ **小规格 EL9 适配**: CentOS/RHEL/Rocky/AlmaLinux 9 默认跳过 EPEL 元数据，使用 fail2ban 源码包安装
+- ✅ **包管理器自动选择**: dnf / yum / apt-get，必要时自动避开容易卡住的元数据/触发器流程
+- ✅ **小规格主机适配**: CentOS/RHEL/Rocky/AlmaLinux 9、Debian/Ubuntu systemd 环境默认使用 fail2ban 源码包安装，减少 dnf/apt/dpkg/man-db 卡顿
 
 # Linux
 
@@ -141,8 +141,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File $tmp -Uninstall
 
 - 脚本会自动检测系统的防火墙类型并选择最佳配置
 - 优先级：firewalld > nftables > iptables
-- 如果没有防火墙，非 EL9 系统会尝试自动安装 iptables
-- 小规格 EL9 系统不会自动安装 iptables，避免触发 dnf 元数据处理导致机器卡顿
+- 如果没有防火墙，老版本 RHEL/CentOS 会尝试自动安装 iptables
+- 小规格 EL9 和 Debian/Ubuntu 系统不会自动安装 iptables，避免触发 dnf 或 apt/dpkg/man-db 导致机器卡顿
 
 **日志系统适配**
 
@@ -150,7 +150,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File $tmp -Uninstall
 - 在 journald-only 系统上自动使用 `backend = systemd`
 - 兼容 rsyslog、syslog-ng 等传统日志服务
 - EL9 上如果没有传统日志文件，使用带 `journalmatch` 限制的 systemd backend，减少 journal 扫描范围
-- EL9 journald-only 系统需要已有 `python3-systemd`；脚本不会自动安装它，以避免小规格机器再次触发 dnf 卡顿
+- EL9 和 Debian/Ubuntu journald-only 系统需要已有 `python3-systemd`；脚本不会自动安装它，以避免小规格机器再次触发 dnf/apt 卡顿
 
 **输入验证**
 
