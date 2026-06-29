@@ -72,6 +72,26 @@ function ENSURE_BASE_DIR {
     if (-not (Test-Path -LiteralPath $BASE_DIR)) {
         New-Item -ItemType Directory -Path $BASE_DIR -Force | Out-Null
     }
+
+    $acl = Get-Acl -LiteralPath $BASE_DIR
+    $acl.SetAccessRuleProtection($true, $false)
+
+    foreach ($rule in @($acl.Access)) {
+        $acl.RemoveAccessRuleAll($rule)
+    }
+
+    $inheritanceFlags = [System.Security.AccessControl.InheritanceFlags]"ContainerInherit,ObjectInherit"
+    $propagationFlags = [System.Security.AccessControl.PropagationFlags]"None"
+    $rights = [System.Security.AccessControl.FileSystemRights]"FullControl"
+    $allow = [System.Security.AccessControl.AccessControlType]"Allow"
+
+    foreach ($sid in @("S-1-5-32-544", "S-1-5-18")) {
+        $identity = New-Object System.Security.Principal.SecurityIdentifier($sid)
+        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($identity, $rights, $inheritanceFlags, $propagationFlags, $allow)
+        $acl.AddAccessRule($rule)
+    }
+
+    Set-Acl -LiteralPath $BASE_DIR -AclObject $acl
 }
 
 function WRITE_LOG {

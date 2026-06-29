@@ -30,6 +30,7 @@ CHECK_WINDOWS_SHELL
 JAIL_NAME="sshd"
 FAIL2BAN_SOURCE_VERSION="1.1.0"
 FAIL2BAN_SOURCE_URL="https://github.com/fail2ban/fail2ban/archive/refs/tags/${FAIL2BAN_SOURCE_VERSION}.tar.gz"
+FAIL2BAN_SOURCE_SHA256="474fcc25afdaf929c74329d1e4d24420caabeea1ef2e041a267ce19269570bae"
 
 # 检测操作系统
 CHECK_OS(){
@@ -335,6 +336,57 @@ FAIL2BAN_SERVICE_EXISTS(){
     fi
 }
 
+VERIFY_SHA256(){
+    local file_path=$1
+    local expected_hash=$2
+    local actual_hash=""
+
+    if command -v sha256sum &> /dev/null; then
+        actual_hash="$(sha256sum "$file_path" | awk '{print $1}')"
+    elif command -v shasum &> /dev/null; then
+        actual_hash="$(shasum -a 256 "$file_path" | awk '{print $1}')"
+    else
+        echo "错误: 未找到 sha256sum 或 shasum，无法校验下载文件。"
+        return 1
+    fi
+
+    if [[ "$actual_hash" != "$expected_hash" ]]; then
+        echo "错误: fail2ban 源码包 SHA256 校验失败。"
+        echo "      期望: $expected_hash"
+        echo "      实际: $actual_hash"
+        return 1
+    fi
+
+    return 0
+}
+
+COPY_FAIL2BAN_CONFIG_DEFAULTS(){
+    local source_config_dir=$1
+    local source_dir=""
+    local source_file=""
+    local relative_path=""
+    local target_file=""
+    local target_dir=""
+
+    while IFS= read -r source_dir; do
+        relative_path="${source_dir#${source_config_dir}}"
+        mkdir -p "/etc/fail2ban/${relative_path}" || return 1
+    done < <(find "$source_config_dir" -type d -print)
+
+    while IFS= read -r source_file; do
+        relative_path="${source_file#${source_config_dir}/}"
+        target_file="/etc/fail2ban/${relative_path}"
+        target_dir="$(dirname "$target_file")"
+
+        mkdir -p "$target_dir" || return 1
+        if [[ -e "$target_file" ]]; then
+            continue
+        fi
+
+        cp "$source_file" "$target_file" || return 1
+    done < <(find "$source_config_dir" -type f -print)
+}
+
 INSTALL_FAIL2BAN_FROM_SOURCE(){
     local work_dir="/tmp/fail2ban-install.$$"
     local archive_path="${work_dir}/fail2ban.tar.gz"
@@ -368,6 +420,11 @@ INSTALL_FAIL2BAN_FROM_SOURCE(){
         rm -rf "$work_dir"
         return 1
     fi
+
+    VERIFY_SHA256 "$archive_path" "$FAIL2BAN_SOURCE_SHA256" || {
+        rm -rf "$work_dir"
+        return 1
+    }
 
     tar -xzf "$archive_path" -C "$work_dir" || {
         rm -rf "$work_dir"
@@ -403,7 +460,7 @@ INSTALL_FAIL2BAN_FROM_SOURCE(){
         rm -rf "$work_dir" "$install_base"
         return 1
     }
-    cp -R "${source_dir}/config/." /etc/fail2ban/ || {
+    COPY_FAIL2BAN_CONFIG_DEFAULTS "${source_dir}/config" || {
         rm -rf "$work_dir" "$install_base"
         return 1
     }
@@ -456,11 +513,6 @@ EOF
             "/usr/local/bin/fail2ban-regex" \
             "/usr/local/bin/fail2ban-python"
         find "$install_base" -type f -print 2>/dev/null
-        find /etc/fail2ban -type f \
-            ! -name 'jail.local' \
-            ! -name 'install-method' \
-            ! -name 'source-install-files.txt' \
-            -print 2>/dev/null
     } > "$install_record"
     echo "source" > /etc/fail2ban/install-method
 
@@ -927,6 +979,11 @@ REMOVE_FAIL2BAN(){
         installed_from_source=true
         if [[ -f /etc/fail2ban/source-install-files.txt ]]; then
             while IFS= read -r installed_file; do
+                case "$installed_file" in
+                    /etc/fail2ban/*)
+                        continue
+                        ;;
+                esac
                 [[ -n "$installed_file" && -e "$installed_file" ]] && rm -f "$installed_file"
             done < /etc/fail2ban/source-install-files.txt
         fi
@@ -990,7 +1047,7 @@ SETTING_FAIL2BAN(){
         # 使用 systemd journal
         cat > /etc/fail2ban/jail.local <<EOF
 [DEFAULT]
-ignoreip = 127.0.0.1
+ignoreip = 127.0.0.1/8 ::1
 dbpurgeage = 1d
 
 [sshd]
@@ -1007,7 +1064,7 @@ EOF
         # 使用传统日志文件
         cat > /etc/fail2ban/jail.local <<EOF
 [DEFAULT]
-ignoreip = 127.0.0.1
+ignoreip = 127.0.0.1/8 ::1
 dbpurgeage = 1d
 
 [sshd]
@@ -1085,15 +1142,21 @@ STOP_FAIL2BAN(){
 EMERGENCY_STOP_FAIL2BAN(){
     ASSERT_ROOT
     STOP_FAIL2BAN >/dev/null 2>&1 || true
-    pkill -9 -f dnf >/dev/null 2>&1 || true
-    pkill -9 -f yum >/dev/null 2>&1 || true
-    pkill -9 -f rpm >/dev/null 2>&1 || true
-    pkill -9 -x apt >/dev/null 2>&1 || true
-    pkill -9 -x apt-get >/dev/null 2>&1 || true
-    pkill -9 -x dpkg >/dev/null 2>&1 || true
-    pkill -9 -x dpkg-deb >/dev/null 2>&1 || true
-    pkill -9 -x mandb >/dev/null 2>&1 || true
-    echo "fail2ban 和包管理器进程已停止。CPU 恢复后可重新执行: bash fail2ban.sh install"
+
+    if [[ "${1}" == "--kill-package-manager" || "${1}" == "--kill-pkg" ]]; then
+        pkill -9 -x dnf >/dev/null 2>&1 || true
+        pkill -9 -x yum >/dev/null 2>&1 || true
+        pkill -9 -x rpm >/dev/null 2>&1 || true
+        pkill -9 -x apt >/dev/null 2>&1 || true
+        pkill -9 -x apt-get >/dev/null 2>&1 || true
+        pkill -9 -x dpkg >/dev/null 2>&1 || true
+        pkill -9 -x dpkg-deb >/dev/null 2>&1 || true
+        pkill -9 -x mandb >/dev/null 2>&1 || true
+        echo "fail2ban 和包管理器进程已停止。CPU 恢复后可重新执行: bash fail2ban.sh install"
+    else
+        echo "fail2ban 已停止。"
+        echo "如确认包管理器进程已卡死，可执行: bash fail2ban.sh emergency-stop --kill-package-manager"
+    fi
 }
 
 DIAGNOSE_LOAD(){
@@ -1161,13 +1224,29 @@ IS_IP_BANNED(){
     [[ "${banned_ips}" == *" ${target_ip} "* ]]
 }
 
+VALIDATE_IP_ADDRESS(){
+    local target_ip=$1
+
+    if command -v python3 &> /dev/null; then
+        python3 - "$target_ip" <<'PY' >/dev/null 2>&1
+import ipaddress
+import sys
+
+ipaddress.ip_address(sys.argv[1])
+PY
+        return $?
+    fi
+
+    [[ "$target_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$|^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$ ]]
+}
+
 case "${1}" in
     install)
         INSTALL_FAIL2BAN
         SETTING_FAIL2BAN
         ;;
     emergency-stop|safe-stop)
-        EMERGENCY_STOP_FAIL2BAN
+        EMERGENCY_STOP_FAIL2BAN "$2"
         ;;
     diagnose|diag)
         DIAGNOSE_LOAD
@@ -1209,7 +1288,7 @@ case "${1}" in
             UNLOCK_IP="${2}"
         fi
 
-        if ! [[ "${UNLOCK_IP}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$|^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$ ]]; then
+        if ! VALIDATE_IP_ADDRESS "${UNLOCK_IP}"; then
             echo "错误: 无效的 IP 地址格式: ${UNLOCK_IP}"
             exit 1
         fi
@@ -1262,7 +1341,8 @@ fail2ban-client -h"
         ;;
     *)
         echo "bash fail2ban.sh {install|uninstall|runlog|more}"
-        echo "bash fail2ban.sh {emergency-stop|safe-stop|diagnose}"
+        echo "bash fail2ban.sh {emergency-stop|safe-stop} [--kill-package-manager]"
+        echo "bash fail2ban.sh {diagnose|diag}"
         echo "bash fail2ban.sh {start|stop|restart|enable|status}"
         echo "bash fail2ban.sh {blocklist|unlock}"
         ;;

@@ -33,11 +33,13 @@ wget "https://raw.githubusercontent.com/trysec/fail2ban/refs/heads/master/fail2b
 - 安装：`bash fail2ban.sh install`
 - 卸载：`bash fail2ban.sh uninstall`
 - 诊断 CPU / 服务状态：`bash fail2ban.sh {diagnose|diag}`
-- 紧急停止 fail2ban 和包管理器进程：`bash fail2ban.sh {emergency-stop|safe-stop}`
+- 紧急停止 fail2ban：`bash fail2ban.sh {emergency-stop|safe-stop}`
+- 确认包管理器已卡死时再强制停止包管理器进程：`bash fail2ban.sh emergency-stop --kill-package-manager`
 - 查看运行日志：`bash fail2ban.sh runlog`
 - 查看更多信息：`bash fail2ban.sh more`
 
 Linux 安装只写入配置，不会自动启动 fail2ban，也不会默认启用开机自启。安装完成后先执行 `bash fail2ban.sh diagnose` 确认 CPU 正常，再手动执行 `bash fail2ban.sh start`。
+源码安装会校验 fail2ban 源码包 SHA256，并且不会覆盖已有 `/etc/fail2ban` 默认配置文件。
 
 ## 服务
 

@@ -17,8 +17,13 @@ $ProgressPreference = "SilentlyContinue"
 
 $repoScriptUrl = "https://raw.githubusercontent.com/trysec/fail2ban/master/fail2ban.ps1"
 $downloadedScript = Join-Path $env:TEMP "fail2ban.ps1"
+$expectedScriptSha256 = "92477cb777b414f3257279374125209d050ebffd1f0c1fd130933fcb215229e2"
 
 Invoke-WebRequest $repoScriptUrl -OutFile $downloadedScript
+$actualScriptSha256 = (Get-FileHash -LiteralPath $downloadedScript -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($actualScriptSha256 -ne $expectedScriptSha256) {
+    throw "Downloaded fail2ban.ps1 SHA256 mismatch. Expected $expectedScriptSha256, got $actualScriptSha256."
+}
 
 $commandName = if ($Uninstall) { "uninstall" } else { "install" }
 $argumentList = @(
